@@ -55,6 +55,51 @@ npm run typecheck
 npm test
 ```
 
+## Blacklist maintenance
+
+`src/data/reagent-blacklist.ts` is a hand-curated list of reagents that are
+NOT reachable via chemistry (admin-spawn / world-seed / botany-derived /
+event-only). The solver skips them by default so it won't recommend mixes
+a chemist can't actually make (e.g. the original Rororium bug). The
+reagent browser hides them behind a "Show admin / rare reagents" toggle.
+
+To regenerate the candidate list after a VS14 data refresh:
+
+```bash
+npx tsx scripts/sweep-unreachable-reagents.ts > /tmp/sweep.txt
+```
+
+The sweep prints `id | group | reason-hint` lines for every reagent with
+no reaction producing it. Compare against the current blacklist and
+hand-curate:
+
+- **Always add** any new unreachable reagent with `heals[]` entries — the
+  solver would otherwise pick it.
+- **Usually add** new Medicine / Biological group entries without heals
+  that a medic might wrongly reach for.
+- **Don't add** basic Elements (Iron, Aluminium, etc.) — those are
+  dispenser primitives.
+- **Don't add** craftable-but-dangerous chems (Razorium, Meth, Lexorin,
+  Nocturine, Hyperzine, Heartbreaker). They're valid outputs in niche
+  scenarios; the UI differentiates via reason tags elsewhere.
+
+Taxonomy for the `reason` field:
+
+| Reason            | Use for                                                 |
+|-------------------|---------------------------------------------------------|
+| `uncraftable`     | No reaction produces it; admin-spawn or world-seed only |
+| `admin-only`      | Debug / ghost-role / observer-tool reagents             |
+| `syndicate-only`  | Syndicate synthesis kits, not chem dispenser            |
+| `botany-only`     | Produced by plants via seed.produce                     |
+| `special-event`   | Event reward / artifact / xenoarch drops                |
+| `other`           | Anything else worth flagging                            |
+
+After curating, run `npm test` — the solver tests in
+`src/data/__tests__/solver.test.ts` include assertions that the default
+solver never picks Rororium / Omnizine for their "best-match" damage
+types. Update those tests if you add a new heal-carrying blacklist entry
+that would unseat an existing expected pick.
+
 ## License
 
 AGPLv3-or-later, matching VS14 first-party code.

@@ -135,6 +135,12 @@ export interface SolverInput {
   readonly species: string;
   readonly filters: SolverFilters;
   readonly operatorName?: string;
+  /**
+   * When true, candidates in `REAGENT_BLACKLIST` are NOT excluded. Default
+   * false — the solver skips admin-spawn / uncraftable reagents (Rororium,
+   * Omnizine, etc.) so its output is actually makeable by a chemist.
+   */
+  readonly includeRestricted?: boolean;
 }
 
 export interface SolverIngredient {

@@ -52,6 +52,7 @@ import type {
   SolverPhysicalEntry,
 } from '../types';
 import { prettifyId, resolveFluentKey } from './fluent';
+import { blacklistEntry, isBlacklisted } from './reagent-blacklist';
 import type { DataBundle } from './store';
 
 // ---------- Constants ----------
@@ -219,6 +220,7 @@ function candidatesFor(
   type: DamageTypeId,
   damage: DamageProfile,
   data: DataBundle,
+  includeRestricted: boolean,
 ): Candidate[] {
   const nonZeroInput = new Set<DamageTypeId>(
     (Object.keys(damage) as DamageTypeId[]).filter((k) => (damage[k] ?? 0) > 0),
@@ -228,6 +230,12 @@ function candidatesFor(
   for (const r of data.reagents) {
     const rateType = healRateForType(r, type, data);
     if (rateType <= 0) continue;
+    // Blacklist filter: skip uncraftable / admin-spawn reagents unless the
+    // caller explicitly opts in via includeRestricted. Species-overlay
+    // special-cases (e.g. Ichor for Diona) are handled downstream — the
+    // overlay reads the ingredient list directly and doesn't go through
+    // this ranking path.
+    if (!includeRestricted && isBlacklisted(r.id)) continue;
     const covers = reagentCoversTypes(r, data);
     // How much of the INPUT profile does this reagent cover?
     let profileCoverage = 0;
@@ -716,12 +724,43 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
         continue;
       }
 
-      const cands = candidatesFor(type, damage as DamageProfile, data);
+      const includeRestricted = input.includeRestricted === true;
+      const cands = candidatesFor(
+        type,
+        damage as DamageProfile,
+        data,
+        includeRestricted,
+      );
       if (cands.length === 0) {
         // No reagent treats this type.
         partialHealTypes.add(type);
         uncoveredForCryo.set(type, leftover);
         continue;
+      }
+
+      // "Best match was restricted" warning: if we're NOT including
+      // restricted reagents, peek at the unfiltered list and compare. If
+      // the top-ranked unfiltered pick is blacklisted, let the medic know
+      // we fell back to the next-best craftable option.
+      if (!includeRestricted) {
+        const unfiltered = candidatesFor(
+          type,
+          damage as DamageProfile,
+          data,
+          true,
+        );
+        const topUnfiltered = unfiltered[0];
+        if (topUnfiltered && isBlacklisted(topUnfiltered.reagent.id)) {
+          // Only emit the warning if the top restricted pick is actually
+          // better (different from our best craftable).
+          if (topUnfiltered.reagent.id !== cands[0].reagent.id) {
+            const entry = blacklistEntry(topUnfiltered.reagent.id);
+            const reasonTag = entry ? ` (${entry.reason})` : '';
+            warnings.push(
+              `Best match for ${type} (${topUnfiltered.reagent.id}) is restricted${reasonTag} — falling back to ${cands[0].reagent.id}.`,
+            );
+          }
+        }
       }
       const best = cands[0];
       const dose = computeDose(best, leftover);

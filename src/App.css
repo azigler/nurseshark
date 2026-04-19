@@ -304,6 +304,42 @@
   font-size: 0.8em;
   margin-top: 0.3rem;
 }
+.reagent-card-badge {
+  display: inline-block;
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  padding: 0.15em 0.5em;
+  border-radius: 0.2rem;
+  margin-bottom: 0.4rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.reagent-card-badge-uncraftable {
+  color: #ffb347;
+  border-color: #a07038;
+}
+.reagent-card-badge-admin-only {
+  color: #ff6a6a;
+  border-color: #8b3030;
+}
+.reagent-card-badge-syndicate-only {
+  color: #ff8fd4;
+  border-color: #8b3060;
+}
+.reagent-card-badge-botany-only {
+  color: #8fdf8f;
+  border-color: #3b7a3b;
+}
+.reagent-card-badge-special-event {
+  color: #7ad1ff;
+  border-color: #3d7ba0;
+}
+.reagent-card-badge-other {
+  color: var(--text-dim);
+}
 
 /* ---------- reagent detail ---------- */
 .reagent-detail {

@@ -420,4 +420,59 @@ describe('computeMix', () => {
     );
     expect(out.label).toMatch(/\/ \d+u \/ [A-Z]{2}/);
   });
+
+  // --- Blacklist integration (vs-3il.3). ---
+
+  // Rororium heals Brute 4/tick → would out-rank Bicaridine (1.5/tick) in
+  // raw rate. Default settings must skip it.
+  it('45 Blunt on Human (default) never picks Rororium (uncraftable)', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 45 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).not.toContain('Rororium');
+    // A real brute-med should have been picked in Rororium's place.
+    expect(ids.some((id) => ['Bicaridine', 'Arcryox'].includes(id))).toBe(true);
+    // Fallback warning was emitted naming Rororium.
+    const warning = out.warnings.find((w) => /Rororium/.test(w));
+    expect(warning).toBeDefined();
+    expect(warning).toMatch(/restricted|fall(?:ing|)-?back|uncraftable/i);
+  });
+
+  // With includeRestricted: true the solver is allowed to reach for the
+  // admin-spawn reagent. This exists for completionists / admin review.
+  it('includeRestricted=true allows Rororium to be picked', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 45 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+        includeRestricted: true,
+      },
+      data,
+    );
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).toContain('Rororium');
+  });
+
+  // Omnizine heals Brute/Burn/Toxin/Airloss at 2/tick each — it would
+  // dominate the multi-type solve if not blacklisted.
+  it('multi-type damage on Human (default) never picks Omnizine (uncraftable)', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 20, Heat: 20, Poison: 20 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).not.toContain('Omnizine');
+    expect(ids).not.toContain('Rororium');
+  });
 });

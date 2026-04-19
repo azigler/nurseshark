@@ -4,6 +4,7 @@
 
 import { Link } from 'react-router-dom';
 import { prettifyId, resolveFluentKey } from '../data/fluent';
+import { blacklistEntry } from '../data/reagent-blacklist';
 import { useData } from '../data/store';
 import type { Reagent } from '../types';
 import { ReagentSprite } from './ReagentSprite';
@@ -11,9 +12,17 @@ import { ReagentSprite } from './ReagentSprite';
 export function ReagentCard({
   reagent,
   compact,
+  showBlacklistBadge,
 }: {
   reagent: Reagent;
   compact?: boolean;
+  /**
+   * When true, renders a restriction badge if this reagent is in the
+   * blacklist. Typically set on the /reagents grid when the "Show admin /
+   * rare reagents" toggle is on; left off elsewhere (cross-reference lists,
+   * reaction products) since those contexts already have their own semantic.
+   */
+  showBlacklistBadge?: boolean;
 }) {
   const data = useData();
   const displayName =
@@ -21,6 +30,7 @@ export function ReagentCard({
   const desc = reagent.desc
     ? resolveFluentKey(data.fluent, reagent.desc)
     : null;
+  const restriction = showBlacklistBadge ? blacklistEntry(reagent.id) : null;
 
   // Fold group heal targets into type counts for a compact summary.
   const typeTargets = new Set<string>();
@@ -48,6 +58,14 @@ export function ReagentCard({
           )}
         </div>
       </div>
+      {!compact && restriction && (
+        <div
+          className={`reagent-card-badge reagent-card-badge-${restriction.reason}`}
+          title={restriction.notes}
+        >
+          {restriction.reason}
+        </div>
+      )}
       {!compact && desc && (
         <div className="reagent-card-desc" title={desc}>
           {desc.length > 160 ? `${desc.slice(0, 160)}…` : desc}
