@@ -8,6 +8,31 @@ export interface ReagentHealEntry {
   readonly amountPerTick: number;
 }
 
+/**
+ * Side-effect a reagent inflicts (positive-delta damage, or a status-effect
+ * gate like Vomit/Jitter/Drowsiness). Mirror of the pipeline's
+ * `OutReagentSideEffect`. See vs-3il.5.
+ */
+export interface ReagentSideEffect {
+  readonly type: 'damage' | 'status';
+  readonly target: string;
+  readonly kind: 'type' | 'group' | 'status';
+  readonly amount: number;
+  /** e.g. `"above 15u"`, or null if unconditional. */
+  readonly condition: string | null;
+}
+
+/**
+ * A heal that fires only in a specific patient state (MobState Critical,
+ * TotalDamage < 50). Rendered as advisory text; not folded into dose math.
+ */
+export interface ReagentConditionalHeal {
+  readonly target: string;
+  readonly kind: 'type' | 'group';
+  readonly amountPerTick: number;
+  readonly condition: string;
+}
+
 export interface Reagent {
   readonly id: string;
   /** Fluent key (e.g. "reagent-name-bicaridine") or, for a few legacy records, a plain name. */
@@ -19,6 +44,10 @@ export interface Reagent {
   readonly metabolismRate: number;
   readonly conflictsWith: readonly string[];
   readonly heals: readonly ReagentHealEntry[];
+  /** Damage the reagent inflicts + status-effect gates (vs-3il.5). */
+  readonly sideEffects: readonly ReagentSideEffect[];
+  /** Heals gated on patient state (Epi crit-only, Tricord <50) (vs-3il.5). */
+  readonly conditionalHeals: readonly ReagentConditionalHeal[];
   readonly effects: readonly unknown[];
   readonly spritesheetIndex: string | null;
 }
@@ -147,6 +176,13 @@ export interface SolverIngredient {
   readonly reagentId: string;
   readonly units: number;
   readonly reason: string;
+  /**
+   * Per-ingredient advisory strings (wiki-voice) explaining side-effects,
+   * conditional heals, and dose-cap caveats the solver can't fully model.
+   * Rendered near the ingredient line in the UI; duplicates of these also
+   * appear on the reagent detail page. See vs-3il.5 + `side-effect-warnings.ts`.
+   */
+  readonly sideEffectWarnings: readonly string[];
 }
 
 export interface SolverPhysicalEntry {

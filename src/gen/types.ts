@@ -120,6 +120,49 @@ export interface OutReagentHealEntry {
   readonly amountPerTick: number;
 }
 
+/**
+ * A side-effect a reagent inflicts while metabolizing. Captured by
+ * `resolve-reagents` from positive-delta HealthChange effects (damage the
+ * reagent CAUSES, distinct from healing) and from status-effect tags like
+ * Vomit / Jitter / Drowsiness with a ReagentCondition threshold.
+ *
+ * Used by the solver's per-ingredient warning layer (src/data/solver.ts) and
+ * the reagent detail page's "Side effects" section.
+ */
+export interface OutReagentSideEffect {
+  /** `"damage"` = positive-delta damage; `"status"` = Vomit/Jitter/Drowsiness/etc. */
+  readonly type: 'damage' | 'status';
+  /**
+   * For `damage`: the damage type or group ID (e.g. `Blunt`, `Brute`, `Poison`).
+   * For `status`: the status effect name (e.g. `vomit`, `jitter`, `drowsiness`, `stun`).
+   */
+  readonly target: string;
+  /** Is `target` a group (expands to multiple types) or a single type? Status effects use `'status'`. */
+  readonly kind: 'type' | 'group' | 'status';
+  /** Damage amount per tick (positive = hurts), or probability/magnitude for status effects. */
+  readonly amount: number;
+  /** Human-readable condition gate (e.g. `"above 15u"`, `"when overdosed"`), or null if unconditional. */
+  readonly condition: string | null;
+}
+
+/**
+ * A heal that fires only under a specific patient-state or damage-threshold
+ * condition — Epinephrine's crit-only Brute/Burn, Tricordrazine's
+ * <50-total-damage gate, etc. Unlike `OutReagentHealEntry`, which is summed
+ * into the solver's dose math, these are rendered as advisory text because
+ * the solver can't know whether the patient will be in the required state
+ * at dose time.
+ */
+export interface OutReagentConditionalHeal {
+  /** Damage type or group ID. */
+  readonly target: string;
+  readonly kind: 'type' | 'group';
+  /** Positive per-tick heal rate. */
+  readonly amountPerTick: number;
+  /** e.g. `"patient must be in Critical state"`, `"only when total damage < 50"`. */
+  readonly condition: string;
+}
+
 export interface OutReagent {
   readonly id: string;
   /** Resolved display name if available, otherwise the fluent key. */
@@ -134,6 +177,18 @@ export interface OutReagent {
   readonly conflictsWith: readonly string[];
   /** Flattened HealthChange list, absolute value. */
   readonly heals: readonly OutReagentHealEntry[];
+  /**
+   * Side-effects the reagent inflicts (damage-causing HealthChange entries
+   * and status-effect gates). Populated from the same effects list as
+   * `heals`; see {@link OutReagentSideEffect} for semantics.
+   */
+  readonly sideEffects: readonly OutReagentSideEffect[];
+  /**
+   * Heals that fire only when the patient is in a specific state (MobState,
+   * TotalDamage). Not added to the solver's dose math; rendered as advisory
+   * text instead. See {@link OutReagentConditionalHeal}.
+   */
+  readonly conditionalHeals: readonly OutReagentConditionalHeal[];
   /** The raw Bloodstream effects list (minimally processed). */
   readonly effects: readonly unknown[];
   readonly spritesheetIndex: string | null;

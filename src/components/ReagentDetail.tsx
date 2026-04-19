@@ -112,6 +112,62 @@ export function ReagentDetail({ reagent }: { reagent: Reagent }) {
         </section>
       )}
 
+      {(reagent.sideEffects?.length ?? 0) > 0 && (
+        <section className="side-effects">
+          <h2>Side effects</h2>
+          <ul className="side-effect-list">
+            {reagent.sideEffects.map((se, idx) => (
+              <li key={`${se.type}-${se.target}-${idx}`}>
+                {se.type === 'damage' ? (
+                  <>
+                    inflicts <strong>{se.amount}</strong>{' '}
+                    {se.kind === 'status' ? (
+                      se.target
+                    ) : (
+                      <DamageBadge type={se.target} linkToPage />
+                    )}{' '}
+                    per tick
+                  </>
+                ) : (
+                  <>
+                    {se.target}
+                    {se.amount !== 1 && ` (p=${se.amount})`}
+                  </>
+                )}
+                {se.condition && (
+                  <span className="side-effect-condition">
+                    {' '}
+                    — {se.condition}
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {(reagent.conditionalHeals?.length ?? 0) > 0 && (
+        <section className="conditional-heals">
+          <h2>Conditional heals</h2>
+          <p className="conditional-note">
+            These heals only fire under the stated condition — the solver treats
+            them as advisory (they are NOT folded into dose math).
+          </p>
+          <ul className="conditional-heal-list">
+            {reagent.conditionalHeals.map((ch, idx) => (
+              <li key={`${ch.target}-${idx}`}>
+                <DamageBadge type={ch.target} linkToPage />{' '}
+                <strong>{ch.amountPerTick.toFixed(2)}</strong> per tick
+                {ch.kind === 'group' && (
+                  <span className="heal-via"> (via group {ch.target})</span>
+                )}
+                <span className="conditional-heal-cond"> — {ch.condition}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       {reagent.conflictsWith.length > 0 && (
         <section className="conflicts">
           <h2>⚠ Conflicts (razorium-producing)</h2>

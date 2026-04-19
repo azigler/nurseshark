@@ -50,6 +50,8 @@ describe('damage treatable flagging (integration-style)', () => {
         metabolismRate: 0.5,
         conflictsWith: [],
         heals: [{ target: 'Holy', kind: 'type', amountPerTick: 1 }],
+        sideEffects: [],
+        conditionalHeals: [],
         effects: [],
         spritesheetIndex: null,
       },

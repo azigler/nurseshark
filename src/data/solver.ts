@@ -53,6 +53,11 @@ import type {
 } from '../types';
 import { prettifyId, resolveFluentKey } from './fluent';
 import { blacklistEntry, isBlacklisted } from './reagent-blacklist';
+import {
+  CONDITIONAL_HEAL_WARNINGS,
+  OD_PROXIMITY_WARNINGS,
+  STATIC_WARNINGS,
+} from './side-effect-warnings';
 import type { DataBundle } from './store';
 
 // ---------- Constants ----------
@@ -189,6 +194,101 @@ export function odThresholdFor(reagent: Reagent): number {
     }
   }
   return min;
+}
+
+// ---------- Per-ingredient side-effect warnings ----------
+//
+// Every picked ingredient carries a `sideEffectWarnings[]` list (vs-3il.5).
+// Warnings come from three sources:
+//   1. `STATIC_WARNINGS` map (unconditional — Ultravasculine, Arithrazine).
+//   2. The reagent's own `sideEffects[]` data (auto-phrased from the pipeline
+//      when no hand-authored override exists).
+//   3. Context-sensitive advisories (Tricord + high total damage, Epi + non-
+//      critical patient, Dermaline at/near OD).
+
+/** Sum non-zero damage amounts to estimate the patient's "total damage". */
+function estimateTotalDamage(damage: DamageProfile): number {
+  let total = 0;
+  for (const v of Object.values(damage)) {
+    if (typeof v === 'number' && v > 0) total += v;
+  }
+  return total;
+}
+
+/**
+ * Build the `sideEffectWarnings[]` array for a picked ingredient. Combines
+ * the static wiki-authored map with context-derived advisories (high-damage
+ * Tricord, non-crit Epi, near-OD Dermaline) and falls back to auto-phrased
+ * side-effect data for reagents with no curated copy.
+ */
+function buildSideEffectWarnings(
+  reagent: Reagent,
+  units: number,
+  input: SolverInput,
+): string[] {
+  const warnings: string[] = [];
+
+  // 1. Static warnings (hand-authored).
+  const stat = STATIC_WARNINGS[reagent.id];
+  if (stat) warnings.push(stat.text);
+
+  // 2. Auto-derived from side-effect data when no static override provided.
+  //    Only fires when nothing else covered this reagent — avoids double-text
+  //    on Ultravasculine/Arithrazine.
+  if (!stat && (reagent.sideEffects?.length ?? 0) > 0) {
+    for (const se of reagent.sideEffects ?? []) {
+      if (se.type === 'damage') {
+        const cond = se.condition ? ` (${se.condition})` : '';
+        warnings.push(
+          `${reagent.id}: inflicts ${se.amount} ${se.target} per tick${cond}.`,
+        );
+      }
+      // Status effects (Vomit/Jitter/Drowsiness) are gated on self-concentration
+      // and already flagged by the existing OD-proximity warning when dose ≥
+      // threshold. Skip to avoid noise.
+    }
+  }
+
+  // 3. OD-proximity (hand-authored).
+  const odMsg = OD_PROXIMITY_WARNINGS[reagent.id];
+  if (odMsg) {
+    const od = odThresholdFor(reagent);
+    if (Number.isFinite(od) && units >= od - odMsg.nearOdMargin) {
+      warnings.push(odMsg.text);
+    }
+  }
+
+  // 4. Tricordrazine: fires advisory when total damage ≥ 50 (wiki-gated).
+  if (reagent.id === 'Tricordrazine') {
+    const total = estimateTotalDamage(input.damage);
+    if (total >= 50) {
+      const msg = CONDITIONAL_HEAL_WARNINGS.Tricordrazine?.tricordHighDamage;
+      if (msg) warnings.push(msg);
+    }
+  }
+
+  // 5. Epinephrine: critical-only Brute/Burn/Poison heal. When the patient
+  //    profile carries those damage types but the input doesn't flag crit,
+  //    advise that the non-crit heal path won't fire. (The solver has no
+  //    explicit "is in crit" input — we conservatively warn any time Epi is
+  //    picked against a Brute/Burn/Poison profile.)
+  if (reagent.id === 'Epinephrine') {
+    const hasConditionalTarget =
+      (input.damage.Blunt ?? 0) > 0 ||
+      (input.damage.Piercing ?? 0) > 0 ||
+      (input.damage.Slash ?? 0) > 0 ||
+      (input.damage.Heat ?? 0) > 0 ||
+      (input.damage.Shock ?? 0) > 0 ||
+      (input.damage.Cold ?? 0) > 0 ||
+      (input.damage.Poison ?? 0) > 0 ||
+      (input.damage.Caustic ?? 0) > 0;
+    if (hasConditionalTarget) {
+      const msg = CONDITIONAL_HEAL_WARNINGS.Epinephrine?.epiNonCritical;
+      if (msg) warnings.push(msg);
+    }
+  }
+
+  return warnings;
 }
 
 // ---------- Candidate scoring ----------
@@ -451,6 +551,7 @@ function applySpeciesOverlay(
         reagentId: ARACHNID_BLOOD_RESTORER,
         units: needed,
         reason: `Copper × ${needed}u — covers ${bloodloss} Bloodloss for Arachnid (Iron is toxic; Copper is the species-gated blood restorer).`,
+        sideEffectWarnings: [],
       });
     } else {
       const needed = Math.max(5, Math.ceil(bloodloss / SALINE_HEAL_PER_UNIT));
@@ -458,6 +559,7 @@ function applySpeciesOverlay(
         reagentId: 'Saline',
         units: needed,
         reason: `Saline × ${needed}u — covers ${bloodloss} Bloodloss for Arachnid (Copper unavailable; Iron is toxic to Arachnids).`,
+        sideEffectWarnings: [],
       });
       warnings.push(
         'Arachnid: Copper unavailable — falling back to Saline. Iron is toxic to Arachnids; do not substitute.',
@@ -469,6 +571,7 @@ function applySpeciesOverlay(
       reagentId: 'Saline',
       units: needed,
       reason: `Saline × ${needed}u — covers ${bloodloss} Bloodloss for ${input.species} (universal restorer; iron-metabolism safe).`,
+      sideEffectWarnings: [],
     });
   }
   return { ingredients: out, warnings };
@@ -855,12 +958,14 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
           reagentId: best.reagent.id,
           units: newUnits,
           reason: existing.reason, // will rebuild below
+          sideEffectWarnings: [], // rebuilt below
         });
       } else {
         ingredientsMap.set(best.reagent.id, {
           reagentId: best.reagent.id,
           units: dose,
           reason: '', // rebuilt below
+          sideEffectWarnings: [], // rebuilt below
         });
       }
       const contribs = reasonContrib.get(best.reagent.id) ?? [];
@@ -909,12 +1014,16 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
         parts.length > 0
           ? `${name} × ${ing.units}u — ${parts.join(', ')}${odStr}.`
           : `${name} × ${ing.units}u — included for profile coverage${odStr}.`;
+      // Per-ingredient side-effect advisories (vs-3il.5) — static map +
+      // context-derived (Tricord high-damage, Epi non-crit, Dermaline OD).
+      const sideEffectWarnings = buildSideEffectWarnings(r, ing.units, input);
       // Replace with rebuilt reason (Map entries are references, but we
       // re-set to be safe).
       ingredientsMap.set(ing.reagentId, {
         reagentId: ing.reagentId,
         units: ing.units,
         reason: reasonText,
+        sideEffectWarnings,
       });
     }
   } else {
