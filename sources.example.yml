@@ -1,0 +1,18 @@
+# nurseshark data pipeline — source configuration.
+#
+# Copy this file to `sources.yml` and point it at your local clone of the
+# Vacation Station 14 repo. The pipeline DOES NOT clone or update the repo;
+# keeping the clone current is the operator's responsibility.
+#
+# `sources.yml` is gitignored — per-operator, never committed.
+
+sources:
+  vs14:
+    # Absolute or relative path to a VS14 checkout. The default assumes
+    # nurseshark sits alongside the VS14 repo (both cloned into
+    # ~/some-parent/).
+    path: "../vacation-station-14"
+    # `auto` reads the HEAD SHA from the clone's .git for meta.json.
+    # Set to a literal SHA to override (useful for reproducible builds
+    # when the clone isn't a git repo, e.g. CI tarballs).
+    commit_context: "auto"

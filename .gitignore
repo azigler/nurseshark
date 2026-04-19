@@ -1,6 +1,7 @@
 # Build output
 dist/
 .vite/
+*.tsbuildinfo
 
 # Dependencies
 node_modules/
@@ -35,3 +36,10 @@ coverage/
 .claude
 hooks
 .beads
+
+# Data pipeline
+# Per-operator source config (template lives in sources.example.yml)
+sources.yml
+# Generated artifacts — regenerated on every `npm run gen`.
+public/data/
+
