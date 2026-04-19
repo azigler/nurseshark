@@ -438,6 +438,135 @@
   color: var(--accent-2);
 }
 
+/* ---------- damage-to-mix solver ---------- */
+.solver-form-rx {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  align-items: stretch;
+  grid-template-columns: none;
+}
+.solver-fieldset {
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--panel);
+}
+.solver-fieldset legend {
+  padding: 0 0.4rem;
+  font-size: 0.85em;
+  color: var(--text-dim);
+}
+.solver-filters {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+}
+.solver-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  cursor: pointer;
+}
+.solver-species-field select {
+  padding: 0.4rem 0.5rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--text);
+  min-width: 12rem;
+}
+.solver-damage-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.6rem 1rem;
+}
+.solver-damage-grid legend {
+  grid-column: 1 / -1;
+}
+.solver-damage-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2em;
+}
+.solver-damage-label {
+  font-size: 0.85em;
+  color: var(--text);
+}
+.solver-damage-group {
+  color: var(--text-dim);
+  font-size: 0.85em;
+}
+.solver-damage-field input {
+  padding: 0.4rem 0.5rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--text);
+}
+.solver-damage-footnote {
+  grid-column: 1 / -1;
+  margin: 0.25rem 0 0;
+  color: var(--text-dim);
+  font-size: 0.8em;
+  font-style: italic;
+}
+.solver-operator-field input {
+  padding: 0.45rem 0.6rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+  color: var(--text);
+  width: 100%;
+  max-width: 22rem;
+}
+.solver-ingredients,
+.solver-physical {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.solver-ingredient,
+.solver-cryo {
+  padding: 0.6rem 0.75rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+}
+.solver-ingredient-head strong {
+  color: var(--accent);
+}
+.solver-ingredient-reason {
+  font-size: 0.85em;
+  color: var(--text-dim);
+  margin-top: 0.25em;
+}
+.solver-time {
+  margin-top: 0.75rem;
+}
+.solver-warnings {
+  margin-top: 0.75rem;
+}
+.solver-warnings ul {
+  color: #ffcc66;
+}
+.solver-label-row {
+  margin-top: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.solver-label-preview code {
+  display: inline-block;
+  padding: 0.3rem 0.6rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 0.25rem;
+}
+
 /* ---------- reactions ---------- */
 .reaction-row {
   padding: 0.6rem 0.8rem;

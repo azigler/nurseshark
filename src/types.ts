@@ -79,28 +79,74 @@ export interface SpriteManifestEntry {
 export type FluentDict = Readonly<Record<string, string>>;
 export type SpriteManifest = Readonly<Record<string, SpriteManifestEntry>>;
 
-/** Shape returned by the solver `computeMix` function. vs-2wj owns the real impl. */
-export interface SolverInput {
-  readonly target: string;
-  readonly units: number;
-  readonly operatorName?: string;
+/**
+ * Damage-driven solver input. Mirrors a health-scanner readout: damage
+ * amounts per treatable type, a species selector, three filter checkboxes
+ * for output composition, and an optional operator name for the label.
+ *
+ * Holy damage is intentionally excluded — it's the chaplain's domain, not
+ * Nurseshark's (see DECISIONS/OQ-4 on vs-2wj).
+ */
+export interface DamageProfile {
+  readonly Blunt?: number;
+  readonly Piercing?: number;
+  readonly Slash?: number;
+  readonly Heat?: number;
+  readonly Cold?: number;
+  readonly Shock?: number;
+  readonly Poison?: number;
+  readonly Caustic?: number;
+  readonly Cellular?: number;
+  readonly Radiation?: number;
+  readonly Bloodloss?: number;
+  readonly Asphyxiation?: number;
 }
 
-export interface SolverStep {
-  readonly kind: 'mix' | 'heat' | 'cool' | 'transfer' | 'note';
-  readonly text: string;
+export type DamageTypeId = keyof DamageProfile;
+
+export interface SolverFilters {
+  readonly chems: boolean;
+  readonly physical: boolean;
+  readonly cryo: boolean;
+}
+
+export interface SolverInput {
+  readonly damage: DamageProfile;
+  /** Species ID (e.g. `Human`, `Moth`, `Vox`, `Diona`). Required. */
+  readonly species: string;
+  readonly filters: SolverFilters;
+  readonly operatorName?: string;
 }
 
 export interface SolverIngredient {
   readonly reagentId: string;
   readonly units: number;
+  readonly reason: string;
+}
+
+export interface SolverPhysicalEntry {
+  readonly itemId: string;
+  readonly count: number;
+  readonly reason: string;
+}
+
+export interface SolverCryoEntry {
+  readonly reagentId: string;
+  readonly units: number;
+  /** Kelvin — cryo tube target temperature. */
+  readonly targetTemp: number;
+  readonly reason: string;
 }
 
 export interface SolverOutput {
   readonly ingredients: readonly SolverIngredient[];
-  readonly steps: readonly SolverStep[];
+  readonly physical: readonly SolverPhysicalEntry[];
+  readonly cryo: SolverCryoEntry | null;
   readonly warnings: readonly string[];
+  /** Pre-built copyable label per pro-tips format. */
   readonly label: string;
-  /** True only when a real impl has computed this. Stub always returns false. */
+  /** Rough estimate (seconds) to fully metabolize the prescribed treatment. */
+  readonly estimatedTimeSec: number | null;
+  /** True when the solver has produced a usable recipe. False = nothing to render. */
   readonly solved: boolean;
 }
