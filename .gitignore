@@ -32,10 +32,11 @@ coverage/
 .vitest-cache/
 
 # Local harness symlinks (point into ../vacation-station-14/)
-# Local-only dev scaffolding — do not commit.
-.claude
-hooks
-.beads
+# Local-only dev scaffolding — do not commit. Anchored to repo root so
+# `src/hooks/` (legit in-tree code) isn't caught.
+/.claude
+/hooks
+/.beads
 
 # Data pipeline
 # Per-operator source config (template lives in sources.example.yml)

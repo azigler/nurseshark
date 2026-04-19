@@ -17,13 +17,17 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "gen": "tsx src/gen/index.ts",
-    "test": "vitest"
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.3"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.6.0",
     "@types/pngjs": "^6.0.5",
@@ -31,6 +35,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "js-yaml": "^4.1.1",
+    "jsdom": "^29.0.2",
     "pngjs": "^7.0.0",
     "tsx": "^4.21.0",
     "typescript": "^5.6.3",
