@@ -748,6 +748,15 @@
 .tag-chip.off {
   opacity: 0.6;
 }
+.tag-chip-verified-wiki.on {
+  background: #9a6fd5;
+  border-color: #9a6fd5;
+  color: #15091f;
+}
+.tag-chip-verified-wiki.off {
+  color: #c8aef0;
+  border-color: #5a3e85;
+}
 .pro-tip {
   padding: 0.6em 0.8em;
   margin: 0.4em 0;

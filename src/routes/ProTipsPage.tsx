@@ -17,6 +17,7 @@ const TAG_LABELS: Record<string, string> = {
   verified: 'Verified',
   unverified: 'Unverified',
   new: 'New',
+  'verified-wiki': 'Verified (Wiki)',
   none: 'Untagged',
 };
 

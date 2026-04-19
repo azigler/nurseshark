@@ -1,10 +1,15 @@
 // Light parser for `src/data/pro-tips.md`. Extracts frontmatter, splits by
 // `##` / `###` headings, and annotates each bullet with its `[verified]` /
-// `[unverified]` / `[new]` tag (if present). We avoid pulling in a full
-// AST/remark library — the file is hand-written and the structure is
-// predictable.
+// `[unverified]` / `[new]` / `[verified-wiki]` tag (if present). We avoid
+// pulling in a full AST/remark library — the file is hand-written and the
+// structure is predictable.
 
-export type ProTipTag = 'verified' | 'unverified' | 'new' | null;
+export type ProTipTag =
+  | 'verified'
+  | 'unverified'
+  | 'new'
+  | 'verified-wiki'
+  | null;
 
 export interface ProTipBullet {
   readonly tag: ProTipTag;
@@ -60,28 +65,31 @@ function parseFrontmatter(src: string): {
 }
 
 /** Pull a leading `[tag]` off a bullet body; return the rest + the tag.
- * Handles three forms:
- *   `[verified] ...`
- *   `**[verified]** ...`
- *   `**[verified] rest of the bold**` (tag is inside the ** span — our
- *   most common form in pro-tips.md).
+ * Handles three forms (matching `verified-wiki` before `verified` so the
+ * longer tag wins):
+ *   `[verified-wiki] ...`
+ *   `**[verified-wiki]** ...`
+ *   `**[verified-wiki] rest of the bold**` (tag is inside the ** span —
+ *   our most common form in pro-tips.md).
  */
+const TAG_ALT = 'verified-wiki|verified|unverified|new';
+
 function extractTag(body: string): { tag: ProTipTag; rest: string } {
-  const mInside = /^\*\*\[(verified|unverified|new)\]\s+/.exec(body);
+  const mInside = new RegExp(`^\\*\\*\\[(${TAG_ALT})\\]\\s+`).exec(body);
   if (mInside) {
     const tag = mInside[1] as ProTipTag;
     // Re-open the bold span after stripping the tag.
     const rest = `**${body.slice(mInside[0].length)}`;
     return { tag, rest };
   }
-  const m = /^\*\*\[(verified|unverified|new)\]\*\*\s+/.exec(body);
+  const m = new RegExp(`^\\*\\*\\[(${TAG_ALT})\\]\\*\\*\\s+`).exec(body);
   if (m) {
     return {
       tag: m[1] as ProTipTag,
       rest: body.slice(m[0].length),
     };
   }
-  const m2 = /^\[(verified|unverified|new)\]\s+/.exec(body);
+  const m2 = new RegExp(`^\\[(${TAG_ALT})\\]\\s+`).exec(body);
   if (m2) {
     return {
       tag: m2[1] as ProTipTag,

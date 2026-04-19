@@ -9,6 +9,7 @@ const TAG_STYLE: Record<string, { bg: string; border: string; fg: string }> = {
   verified: { bg: '#1a3a22', border: '#4a8e3a', fg: '#d5f0c8' },
   unverified: { bg: '#3a3418', border: '#b59840', fg: '#f4e4b5' },
   new: { bg: '#1a2c3a', border: '#4a8ab5', fg: '#c8e2f4' },
+  'verified-wiki': { bg: '#2a1c3a', border: '#9a6fd5', fg: '#e3d4f5' },
   none: { bg: '#232a34', border: '#44556a', fg: '#e7eef6' },
 };
 

@@ -9,12 +9,90 @@ ss14_version_checked_against: vs14 flavor-A post-reset (commit 86a6f6a3)
 
 Tribal knowledge for chemists and medics. Grouped by theme. Each tip is
 tagged `[verified]` (checked against current game YAML), `[unverified]`
-(conventional wisdom, not yet checked), or `[new]` (original insight
-surfaced during research).
+(conventional wisdom, not yet checked), `[new]` (original insight
+surfaced during research), or `[verified-wiki]` (cited directly from the
+SS14 wiki — see Sources at the bottom).
 
 When we ship, the app renders this file as a callouts layer across the
 Medical / Chemistry / Cryo sections — tips show up next to the reagent
 or procedure they reference.
+
+---
+
+## Triage and revival
+
+- **[verified-wiki] Critical patients constantly take asphyxiation damage.**
+  Patients in the [Critical] state will constantly take Asphyxiation Damage,
+  so ideally you should treat them quickly, or give them chemicals like
+  Epinephrine or Inaprovaline to prevent them from dying.
+- **[verified-wiki] Revival flow: damage < 200, then defib, then chems.**
+  To revive a dead patient, total damage must be below 200. Use topicals
+  (brute packs, ointments, gauze) to reduce damage, then defibrillate.
+  This brings them to critical; use chemicals for the rest.
+- **[verified-wiki] Tricordrazine only works below 50 total damage.** Heals
+  1 brute + 0.5 poison + 1 burn per unit. Good as a fallback when better
+  meds aren't available, and a solid medibot loadout for minor injuries.
+- **[verified-wiki] Epinephrine quirk — critical-state only.** Technically
+  heals Brute/Burn/Poison, but ONLY when the patient is in the critical
+  state. For non-crit patients, use direct meds instead.
+- **[verified-wiki] Dermaline OD top-up trick.** Max safe dose is 10u,
+  syringe holds 15u. Fill the last 5u with Tricordrazine for piggyback
+  healing without crossing the OD threshold.
+
+## Stasis bed
+
+- **[verified-wiki] Slows metabolism 10×.** Dead patients on a stasis
+  bed are preserved for up to 100 minutes before they rot. A rotting
+  patient cannot be revived.
+- **[verified-wiki] Side effect: asphyxiates living and critical patients.**
+  Stasis beds suppress breathing too — remove the patient as soon as
+  they're revived, or you'll kill them a second time.
+- **[verified-wiki] Topicals still work on stasis.** Ointments, gauze,
+  brute packs, blood bags, medicated sutures, and regenerative meshes
+  work fine on stasis since they don't rely on metabolism. Use the
+  preservation window to patch wounds without burning chem supplies.
+
+## Bleeding and blood loss
+
+- **[verified-wiki] Everyone has 300u of blood baseline.** Below 90%
+  blood level, bloodloss damage begins. Watch the blood pool on the
+  tile as a rough visual indicator.
+- **[verified-wiki] Three-step bleeding protocol.** (1) Stop the bleeding
+  with gauze or Tranexamic Acid. (2) Restore blood level with Iron or
+  Saline — or Copper for Arachnids (see below). (3) Cure the bloodloss
+  damage with Dexalin Plus.
+- **[verified-wiki] Tranexamic Acid is 3× stronger than Pulped Banana Peel**
+  and 6× stronger than Inaprovaline for bleed reduction. Reach for it
+  when gauze alone isn't keeping up.
+- **[verified-wiki] Medipens contain 15u total: Epinephrine + 3u Tranexamic Acid.**
+  Everyone starts with one in their survival box. Combat-ready triage
+  in one click.
+- **[verified-wiki] Arachnid + Iron = TOXIC.** Use Copper for Arachnid
+  blood level restoration — iron-chain reagents (Iron, Ferrosoplus)
+  poison them. The solver knows about this substitution automatically.
+
+## Defibrillator
+
+- **[verified-wiki] Heals up to 40 asphyxiation, inflicts 5 shock damage.**
+  Requires patient total damage below 200. Press **Z** to activate the
+  defib after placing it on the patient. Pair with topicals first to
+  drop damage under the threshold.
+
+## Medibots
+
+- **[verified-wiki] Default loadout: Tricordrazine (minor) or Inaprovaline (critical).**
+  Wrench-anchor medibots near medical beds so they can autonomously
+  triage incoming patients without wandering off.
+
+## Chemical delivery methods
+
+- **[verified-wiki] Pills hold up to 20u, slower onset.** Digestion delay
+  before absorption — best for prophylactic or long-acting chems.
+- **[verified-wiki] Syringes hold up to 15u, near-instant.** The default
+  delivery method when you need something working RIGHT NOW.
+- **[verified-wiki] CMO hypospray: 30u capacity, 5u doses, instant.**
+  Reserved for the Chief Medical Officer — fast repeat dosing without
+  reloading between patients.
 
 ---
 
@@ -176,6 +254,10 @@ divergent biology that changes what's actually safe to give them.
 
 - **[verified] Ambuzol cures a bite (10u, early).** Must be given before
   turning. Ambuzol Plus grants permanent immunity.
+- **[verified-wiki] Ambuzol recipe: dylovene + ammonia + zombie blood.**
+  Ambuzol+ is Ambuzol + Omnizine and grants permanent immunity. A bite
+  received while the patient is already in the critical state causes
+  instant zombification — dose Ambuzol BEFORE they go down.
 - **[unverified] Omnizine source post-Flavor-A.** Bugmedical says
   omnizine is "from botany or other source, not craftable" — need
   to confirm whether omnizine is still un-synthesizable in the pure
@@ -198,3 +280,17 @@ checkable and should auto-populate `[verified]` tags rather than
 
 The pipeline should lint pro-tips.md against game data and emit
 warnings when a `[verified]` tag no longer matches the YAML.
+
+---
+
+## Sources
+
+All `[verified-wiki]` entries above are cited directly from the
+Space Station 14 community wiki. Wiki pages evolve — the content-pipeline
+should re-check these URLs periodically and update tags when the
+underlying wiki text shifts.
+
+- Medical — <https://wiki.spacestation14.com/wiki/Medical>
+- Guide to Medical — <https://wiki.spacestation14.com/wiki/Guide_to_Medical>
+- Chemicals — <https://wiki.spacestation14.com/wiki/Chemicals>
+- Medibot — <https://wiki.spacestation14.com/wiki/Medibot>
