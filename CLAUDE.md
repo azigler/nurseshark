@@ -66,3 +66,10 @@ AGPLv3-or-later, matching VS14 first-party code.
   but share no code.
 - [bugmedical](https://hoshizora-sayo.github.io/bugmedical/) — content
   organization cue; all content is re-generated from game data.
+- **Official SS14 wiki** — canonical language reference for our
+  interpretive text. Mirror the wiki's phrasing so a player reading
+  [Medical](https://wiki.spacestation14.com/wiki/Medical),
+  [Guide to Medical](https://wiki.spacestation14.com/wiki/Guide_to_Medical),
+  [Reagents](https://wiki.spacestation14.com/wiki/Reagents), or
+  [Medicine](https://wiki.spacestation14.com/wiki/Medicine) sees the
+  same voice here. Equal with base game, not replacing it.

@@ -69,11 +69,21 @@ AGPLv3-or-later. See [`LICENSE`](./LICENSE).
   inspiration for the SS14-YAML-driven static-site pattern. Nurseshark
   mirrors the "understand one, understand the other" navigation feel but
   ships an entirely original codebase.
-- [bugmedical](https://hoshizora-sayo.github.io/bugmedical/) — the
-  bugmedical guide catalyzed the idea for a proper chemistry/medical
-  companion tool. Nurseshark's content organization (damage-type sections,
-  Pro Tips callouts) takes cues from it, but all content is re-generated
-  from game data rather than lifted from bugmedical's pages.
+- [bugmedical](https://hoshizora-sayo.github.io/bugmedical/) — catalyzed
+  the idea for a proper chemistry/medical companion tool. Content
+  organization (damage-type sections, Pro Tips callouts) takes cues from
+  it, but all content is re-generated from game data.
+- **Official SS14 wiki (primary canonical reference for language + facts):**
+  - [Medical](https://wiki.spacestation14.com/wiki/Medical)
+  - [Guide to Medical](https://wiki.spacestation14.com/wiki/Guide_to_Medical)
+  - [Reagents](https://wiki.spacestation14.com/wiki/Reagents)
+  - [Medicine](https://wiki.spacestation14.com/wiki/Medicine)
+
+  Nurseshark's interpretive descriptions (heal rates, OD thresholds,
+  side effects, species-specific notes) follow the wiki's phrasing
+  conventions so players moving between the wiki and this tool read the
+  same language. We're equal with the base game — not replacing the
+  wiki, matching its voice.
 
 Nurseshark's code, content, and data pipeline are all original work under
 AGPLv3. Neither repo's code is included.
