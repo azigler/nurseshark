@@ -93,11 +93,12 @@ async function main() {
   const sprites = buildSpritePack(
     reagentsWithConflicts,
     containers,
+    species,
     sources.vs14Path,
     outDir,
   );
   console.log(
-    `  - ${sprites.reagentCount} reagent sprites, ${sprites.containerCount} container sprites`,
+    `  - ${sprites.reagentCount} reagent sprites, ${sprites.containerCount} container sprites, ${sprites.speciesCount} species sprites`,
   );
 
   // Fold sprite indices back in.

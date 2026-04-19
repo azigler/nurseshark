@@ -29,3 +29,14 @@ export function containerSpriteUrl(
   }
   return `${base()}data/${entry.path}`;
 }
+
+export function speciesSpriteUrl(
+  manifest: SpriteManifest,
+  speciesId: string,
+): string | null {
+  const entry = manifest[`species:${speciesId}`];
+  if (!entry) {
+    return null;
+  }
+  return `${base()}data/${entry.path}`;
+}
