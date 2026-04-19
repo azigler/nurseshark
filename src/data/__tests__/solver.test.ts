@@ -188,6 +188,136 @@ describe('computeMix', () => {
     const ironChain = ['Dexalin', 'DexalinPlus'];
     const ironPicked = ids.filter((id) => ironChain.includes(id));
     expect(ironPicked).toHaveLength(0);
+    // And definitely not Copper — that's Arachnid-specific.
+    expect(ids).not.toContain('Copper');
+  });
+
+  // Scenario 4b: Vox + bloodloss should also swap to Saline (non-Arachnid cohort).
+  it('applies Vox species overlay (Saline for bloodloss, not Copper)', () => {
+    const out = computeMix(
+      {
+        damage: { Bloodloss: 30 },
+        species: 'Vox',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(out.solved).toBe(true);
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).toContain('Saline');
+    expect(ids).not.toContain('Copper');
+  });
+
+  // Scenario 4c: Diona + bloodloss keeps Ichor (tree-sap compatible).
+  it('applies Diona species overlay (keeps Ichor, no Copper)', () => {
+    const out = computeMix(
+      {
+        damage: { Bloodloss: 30 },
+        species: 'Diona',
+        filters: { chems: true, physical: false, cryo: false },
+        // Ichor is blacklisted by default; opt in to exercise the Diona path.
+        includeRestricted: true,
+      },
+      data,
+    );
+    expect(out.solved).toBe(true);
+    const ids = out.ingredients.map((i) => i.reagentId);
+    // Either Ichor is kept (Diona-specific) or Saline is fallback; Copper MUST
+    // NOT be injected — it's gated for Arachnid only.
+    expect(ids).not.toContain('Copper');
+  });
+
+  // Scenario 4d: Arachnid + bloodloss → Copper overlay (NOT Iron, NOT Saline).
+  // Iron is toxic to Arachnids in-game (elements.yml: Iron's HealthChange
+  // Poison 0.1/tick gated on MetabolizerTypeCondition Arachnid; its
+  // ModifyBloodLevel is inverted so no blood restored). Copper is the mirror
+  // and the species-correct blood restorer.
+  it('applies Arachnid species overlay (Copper, not Iron or Saline)', () => {
+    const out = computeMix(
+      {
+        damage: { Bloodloss: 30 },
+        species: 'Arachnid',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(out.solved).toBe(true);
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).toContain('Copper');
+    // Saline is fallback only — when Copper is available we shouldn't inject it.
+    expect(ids).not.toContain('Saline');
+    // Iron-chain healers must not leak through.
+    expect(ids).not.toContain('Dexalin');
+    expect(ids).not.toContain('DexalinPlus');
+    expect(ids).not.toContain('Iron');
+    // Copper units should scale with bloodloss: 30 / 4-per-unit = ceil(7.5) = 8
+    // (minimum 5u enforced elsewhere).
+    const copper = out.ingredients.find((i) => i.reagentId === 'Copper');
+    expect(copper?.units).toBeGreaterThanOrEqual(5);
+    expect(copper?.units).toBeLessThanOrEqual(20);
+    // A warning should note the swap (wiki-phrased or fallback).
+    const warning = out.warnings.find((w) => /toxic|Copper/i.test(w));
+    expect(warning).toBeDefined();
+  });
+
+  // Scenario 4e: Human + bloodloss → standard ranking (no species overlay).
+  // Verifies the overlay does NOT fire for default-metabolism species: no
+  // Copper injection, no Saline injection. The solver's natural pick for a
+  // Bloodloss-only profile on Human is whichever reagent with a heals[] entry
+  // covering the Airloss group (Bloodloss ∈ Airloss) ranks highest — in the
+  // current data that's Cryoxadone (3/tick, broad coverage) rather than a
+  // pure iron-chain healer, and that's fine: the point of this test is that
+  // the overlay is a no-op for Human.
+  it('Human + bloodloss uses standard ranking (no species overlay)', () => {
+    const out = computeMix(
+      {
+        damage: { Bloodloss: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(out.solved).toBe(true);
+    const ids = out.ingredients.map((i) => i.reagentId);
+    // Overlay reagents should NOT appear for Human.
+    expect(ids).not.toContain('Copper');
+    expect(ids).not.toContain('Saline');
+    // Some chem was picked (not an empty mix).
+    expect(out.ingredients.length).toBeGreaterThan(0);
+    // No species-overlay warnings.
+    const overlayWarning = out.warnings.find((w) =>
+      /toxic|Arachnid|iron-metabolism|swapped for Saline/i.test(w),
+    );
+    expect(overlayWarning).toBeUndefined();
+  });
+
+  // Scenario 4f: Arachnid + bloodloss when Copper is unavailable → Saline
+  // fallback with a warning. Simulate unavailability by removing Copper from
+  // the bundle (mirrors what would happen if Copper were blacklisted or the
+  // dataset were stripped down).
+  it('Arachnid + bloodloss falls back to Saline when Copper is unavailable', () => {
+    const reagentsById = new Map(data.reagentsById);
+    reagentsById.delete('Copper');
+    const reagents = data.reagents.filter((r) => r.id !== 'Copper');
+    const stripped: DataBundle = { ...data, reagents, reagentsById };
+
+    const out = computeMix(
+      {
+        damage: { Bloodloss: 30 },
+        species: 'Arachnid',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      stripped,
+    );
+    expect(out.solved).toBe(true);
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).not.toContain('Copper');
+    expect(ids).toContain('Saline');
+    // Fallback warning must mention Copper unavailability or Iron toxicity.
+    const warning = out.warnings.find((w) =>
+      /Copper unavailable|toxic/i.test(w),
+    );
+    expect(warning).toBeDefined();
   });
 
   // Scenario 5a: cryo toggle OFF + damage beyond OD-legal + practical-cap

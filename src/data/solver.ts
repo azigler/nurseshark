@@ -82,6 +82,41 @@ const NON_IRON_METABOLISM_SPECIES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Arachnids are a special case within the non-iron-metabolism cohort:
+ * Iron is actively TOXIC to them (confirmed in-game — see
+ * `Resources/Prototypes/Reagents/elements.yml`: Iron's `HealthChange`
+ * is gated on `MetabolizerTypeCondition { type: [Arachnid] }` and
+ * delivers Poison 0.1/tick, while its `ModifyBloodLevel` is gated on
+ * `inverted: true` so no blood is restored). Copper is the mirror:
+ * `ModifyBloodLevel` fires FOR Arachnids and Poison HealthChange is
+ * inverted.
+ *
+ * Wiki phrasing (Guide_to_Medical): "If the patient is an arachnid,
+ * note that Iron is toxic to them. Use Copper instead, which will
+ * provide the same effect to them."
+ *
+ * Consequently, for Arachnid bloodloss the preferred overlay is Copper
+ * (the species-correct blood restorer) rather than Saline. Saline is
+ * the fallback when Copper is blacklisted/unavailable.
+ */
+const ARACHNID_BLOOD_RESTORER = 'Copper';
+
+/**
+ * Copper's ModifyBloodLevel delivers 0.4 per tick at metabolismRate 0.1,
+ * so one unit sustains 10 ticks → 4 Bloodloss healed per unit. Mirrors
+ * the Saline math below. (Source of truth is still the YAML — this is a
+ * hard-coded constant for overlay estimation because ModifyBloodLevel
+ * amounts aren't surfaced via the heals[] model.)
+ */
+const COPPER_HEAL_PER_UNIT = 4;
+
+/**
+ * Saline's ModifyBloodLevel: amount 6 per tick, no metabolism gate →
+ * heal-per-unit used when the overlay injects Saline.
+ */
+const SALINE_HEAL_PER_UNIT = 6;
+
+/**
  * Reagents that restore Blood level via iron-metabolism. These should be
  * swapped for Saline for Moth/Vox/Diona/Slime/Arachnid patients. Empirically
  * derived from the pipeline: reagents with a `ModifyBloodLevel` effect that
@@ -332,14 +367,22 @@ function applySpeciesOverlay(
     return { ingredients, warnings };
   }
 
-  // The spec's "iron-metabolism swap" is about ensuring Saline is present
-  // for Moth/Vox/Diona/Slime/Arachnid when there's Bloodloss. In the current
-  // game data, only the raw `Iron` reagent is strictly iron-gated (and the
-  // solver never picks Iron directly because Iron has no `heals[]` entry —
-  // its blood effect is a ModifyBloodLevel, not a HealthChange). So the
-  // pragmatic behavior: drop any non-universal bloodloss healer that doesn't
-  // also cover other input damage types, and always ensure Saline is present
-  // (or Ichor for Diona).
+  // The spec's "iron-metabolism swap" is about ensuring a species-appropriate
+  // blood restorer is present for Moth/Vox/Diona/Slime/Arachnid when there's
+  // Bloodloss. In the current game data, only the raw `Iron` and `Copper`
+  // reagents are strictly species-gated (and the solver never picks them
+  // directly because neither has a `heals[]` entry — their blood effect is a
+  // `ModifyBloodLevel`, not a `HealthChange`). So the pragmatic behavior:
+  // drop any non-universal bloodloss healer that doesn't also cover other
+  // input damage types, and ensure the species-appropriate restorer is
+  // present.
+  //
+  // Species priority:
+  //   - Diona: Ichor (tree-sap) is compatible; keep it if present, else Saline.
+  //   - Arachnid: Copper (species-gated blood restorer in-game) is preferred
+  //     over Saline; Iron is TOXIC (applies Poison 0.1/tick). Fall back to
+  //     Saline only if Copper is blacklisted/unavailable.
+  //   - Moth/Vox/SlimePerson: Saline (universal).
   const out: SolverIngredient[] = [];
   const nonZeroInputTypes = new Set(
     (Object.keys(input.damage) as DamageTypeId[]).filter(
@@ -347,6 +390,7 @@ function applySpeciesOverlay(
     ),
   );
   const dionaIchorOk = input.species === 'Diona';
+  const isArachnid = input.species === 'Arachnid';
   for (const ing of ingredients) {
     const r = data.reagentsById.get(ing.reagentId);
     if (!r) {
@@ -369,23 +413,58 @@ function applySpeciesOverlay(
       (t) => t !== 'Bloodloss' && nonZeroInputTypes.has(t),
     );
     if (otherInputCoverage) {
-      // Keep for non-blood coverage; Saline will be added below for bloodloss.
+      // Keep for non-blood coverage; species-appropriate restorer added below.
       out.push(ing);
     } else {
-      // Drop in favor of Saline — this reagent was picked only for Bloodloss.
-      warnings.push(
-        `${input.species}: ${r.id} swapped for Saline (iron-metabolism blood not compatible).`,
-      );
+      // Drop — this reagent was picked only for Bloodloss and isn't safe for
+      // this species. Warning phrasing mirrors the wiki for Arachnid.
+      if (isArachnid) {
+        warnings.push(
+          `Arachnid: ${r.id} dropped — Iron is toxic to Arachnids. Using Copper instead.`,
+        );
+      } else {
+        warnings.push(
+          `${input.species}: ${r.id} swapped for Saline (iron-metabolism blood not compatible).`,
+        );
+      }
     }
   }
 
-  // Ensure Saline is present for the Bloodloss portion (unless Diona kept Ichor).
+  // Ensure the species-appropriate restorer is present.
   const hasDionaIchor =
     dionaIchorOk && out.some((ing) => ing.reagentId === 'Ichor');
   const hasSaline = out.some((ing) => ing.reagentId === 'Saline');
-  if (!hasSaline && !hasDionaIchor) {
-    const healPerUnit = 6; // Saline ModifyBloodLevel amount per unit.
-    const needed = Math.max(5, Math.ceil(bloodloss / healPerUnit));
+  const hasCopper = out.some(
+    (ing) => ing.reagentId === ARACHNID_BLOOD_RESTORER,
+  );
+
+  if (isArachnid && !hasCopper && !hasSaline) {
+    // Copper is the species-correct pick for Arachnid. If it's blacklisted or
+    // otherwise unavailable, fall back to Saline with a stronger warning —
+    // either way the patient gets a non-toxic blood restorer.
+    const copperAvailable =
+      data.reagentsById.has(ARACHNID_BLOOD_RESTORER) &&
+      !isBlacklisted(ARACHNID_BLOOD_RESTORER);
+    if (copperAvailable) {
+      const needed = Math.max(5, Math.ceil(bloodloss / COPPER_HEAL_PER_UNIT));
+      out.push({
+        reagentId: ARACHNID_BLOOD_RESTORER,
+        units: needed,
+        reason: `Copper × ${needed}u — covers ${bloodloss} Bloodloss for Arachnid (Iron is toxic; Copper is the species-gated blood restorer).`,
+      });
+    } else {
+      const needed = Math.max(5, Math.ceil(bloodloss / SALINE_HEAL_PER_UNIT));
+      out.push({
+        reagentId: 'Saline',
+        units: needed,
+        reason: `Saline × ${needed}u — covers ${bloodloss} Bloodloss for Arachnid (Copper unavailable; Iron is toxic to Arachnids).`,
+      });
+      warnings.push(
+        'Arachnid: Copper unavailable — falling back to Saline. Iron is toxic to Arachnids; do not substitute.',
+      );
+    }
+  } else if (!isArachnid && !hasSaline && !hasDionaIchor) {
+    const needed = Math.max(5, Math.ceil(bloodloss / SALINE_HEAL_PER_UNIT));
     out.push({
       reagentId: 'Saline',
       units: needed,
