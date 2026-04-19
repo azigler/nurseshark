@@ -50,6 +50,7 @@ import type {
   SolverInput,
   SolverOutput,
   SolverPhysicalEntry,
+  SolverRevivalStep,
 } from '../types';
 import { prettifyId, resolveFluentKey } from './fluent';
 import { blacklistEntry, isBlacklisted } from './reagent-blacklist';
@@ -790,6 +791,283 @@ function pickPhysicalItems(
   return { physical: out, remaining };
 }
 
+// ---------- Dead-patient revival flow (vs-3il.6) ----------
+//
+// When `patientState === "dead"` the solver switches to a revival-first flow:
+//
+//   1. Reagents don't metabolize in corpses, so skip the chem pass entirely
+//      for the primary pick. Topicals (physical items) are the only thing
+//      that reduces damage while the patient is flat-lined.
+//   2. Defibrillators gate on total damage below 200 (SS14 in-game threshold).
+//      So the goal is: pick topicals until projected damage < 200.
+//   3. Once the patient is revivable, emit a `revivalStep` describing the
+//      defibrillator use. The defib heals 40 Asphyxiation and inflicts 5
+//      Shock — flat numbers from the in-game prototype, not a free parameter.
+//   4. Project the post-defib damage profile (original − topical heals −
+//      defib heals + defib inflicts) and re-run `computeMix` with
+//      `patientState: "critical"` to produce `postRevivalIngredients`. This
+//      gives the medic a chem plan for the implicitly-critical post-revival
+//      state, with side-effect warnings intact.
+//   5. If even a maximum-stack application of every available topical cannot
+//      reduce projected damage below 200, emit the "cannot be revived via
+//      available topicals; consult CMO" warning. No revivalStep is emitted.
+//
+// Wiki-voice advisory strings live in constants below to keep the render
+// layer simple (it just stringifies the output).
+
+/** In-game defibrillator total-damage threshold. Damage ≥ 200 → can't revive. */
+const REVIVAL_DAMAGE_THRESHOLD = 200;
+
+/** Asphyxiation healed by a single defib shock. */
+const DEFIB_HEAL_ASPHYXIATION = 40;
+
+/** Shock inflicted by a single defib shock (the medical cost of revival). */
+const DEFIB_INFLICT_SHOCK = 5;
+
+const DEFIB_NOTE = 'Press Z to activate, then use on patient.';
+
+const REVIVAL_WARN_TOPICALS_FIRST =
+  'Reduce total damage below 200 with topicals before defibrillating.';
+
+const REVIVAL_WARN_POST_REVIVAL =
+  'Post-revival: patient enters critical state. Continue with chemical treatment for remaining damage.';
+
+const REVIVAL_WARN_DEFIB_PROFILE =
+  'Defibrillate: heals 40 Asphyxiation, inflicts 5 Shock. Press Z to activate.';
+
+const REVIVAL_WARN_CANNOT_REVIVE =
+  'Patient cannot be revived via available topicals; consult CMO.';
+
+/**
+ * Greedily pick topicals for a dead patient, aiming to reduce total damage
+ * below `REVIVAL_DAMAGE_THRESHOLD`. This is a stricter / goal-directed
+ * variant of `pickPhysicalItems` — the caller cares about the total damage
+ * projection, not per-type coverage.
+ *
+ * We iterate in descending per-application effectiveness (sum of heals +
+ * synthetic Bloodloss heal) and keep applying until the total drops below
+ * the threshold OR no item can make further progress. Unlike the normal
+ * physical pass we DO NOT fold in items whose damagePenalty would push the
+ * patient away from revivability (e.g. Tourniquet inflicts Blunt + Asphyxiation
+ * — great for active bleed, risky when the goal is to drop under 200 total).
+ */
+function pickRevivalTopicals(
+  damage: DamageProfile,
+  data: DataBundle,
+): {
+  physical: SolverPhysicalEntry[];
+  remaining: Map<DamageTypeId, number>;
+  totalRemaining: number;
+} {
+  const remaining = new Map<DamageTypeId, number>();
+  for (const t of TREATABLE_DAMAGE_TYPES) {
+    const v = damage[t] ?? 0;
+    if (v > 0) remaining.set(t, v);
+  }
+  const totalInitial = [...remaining.values()].reduce((s, v) => s + v, 0);
+  let total = totalInitial;
+  const out: SolverPhysicalEntry[] = [];
+
+  // Sort items by total useful heal per application (brute items for brute
+  // damage, burn items for burn damage, etc). Identical to pickPhysicalItems
+  // scoring so we don't duplicate the ranking logic.
+  const sortedItems = [...data.physicalItems].sort((a, b) => {
+    const scoreA =
+      Object.values(a.healsPerApplication).reduce((s, v) => s + v, 0) +
+      syntheticBloodlossHeal(a);
+    const scoreB =
+      Object.values(b.healsPerApplication).reduce((s, v) => s + v, 0) +
+      syntheticBloodlossHeal(b);
+    return scoreB - scoreA;
+  });
+
+  for (const item of sortedItems) {
+    if (total < REVIVAL_DAMAGE_THRESHOLD) break;
+    // Skip items that inflict damage — dead patients don't benefit from the
+    // bleeding-stop trade when the goal is raw total reduction.
+    if (Object.keys(item.damagePenalty).length > 0) continue;
+    // Bleeding-only items (Tourniquet) are filtered by the damagePenalty
+    // check above; Gauze & MedicatedSuture pass through cleanly because
+    // their bloodloss help is via bloodlossModifier with no penalty.
+
+    const healedByType = new Map<string, number>();
+    const stackCap = Math.max(item.stackSize, 10);
+    let count = 0;
+    while (count < stackCap && total >= REVIVAL_DAMAGE_THRESHOLD) {
+      let usefulHeal = 0;
+      for (const t of TREATABLE_DAMAGE_TYPES) {
+        const per = effectiveHealPerApplication(item, t);
+        if (per <= 0) continue;
+        const rem = remaining.get(t) ?? 0;
+        if (rem > 0) usefulHeal += Math.min(rem, per);
+      }
+      if (usefulHeal <= 0) break;
+      for (const t of TREATABLE_DAMAGE_TYPES) {
+        const per = effectiveHealPerApplication(item, t);
+        if (per <= 0) continue;
+        const rem = remaining.get(t) ?? 0;
+        if (rem > 0) {
+          const applied = Math.min(rem, per);
+          healedByType.set(t, (healedByType.get(t) ?? 0) + applied);
+          remaining.set(t, rem - applied);
+          total -= applied;
+        }
+      }
+      count += 1;
+    }
+    if (count > 0) {
+      const healedSummary = [...healedByType.entries()]
+        .filter(([, a]) => a > 0)
+        .map(([t, a]) => `${Math.round(a * 10) / 10} ${t}`)
+        .join(' + ');
+      out.push({
+        itemId: item.id,
+        count,
+        reason: `${item.name} × ${count} — covers ${healedSummary} (dead-mode: reducing toward defib threshold <200).`,
+      });
+    }
+  }
+
+  return { physical: out, remaining, totalRemaining: total };
+}
+
+/**
+ * Dead-patient flow entry point. Wraps:
+ *   1. Topical pick (`pickRevivalTopicals`) to reduce damage below 200.
+ *   2. Revival-step emission when revivable.
+ *   3. Post-defib damage projection + recursive solve with patientState=critical.
+ *
+ * Kept separate from `computeMix` so the standard flow stays readable and the
+ * dead-mode branch stays self-contained.
+ */
+function computeDeadModeOutput(
+  input: SolverInput,
+  data: DataBundle,
+  sanitizedDamage: DamageProfile,
+): SolverOutput {
+  const patientStateWarnings: string[] = [REVIVAL_WARN_TOPICALS_FIRST];
+  const warnings: string[] = [];
+
+  const topicalResult = pickRevivalTopicals(sanitizedDamage, data);
+  const physical = topicalResult.physical;
+  const totalAfterTopicals = topicalResult.totalRemaining;
+
+  // Can the patient be revived? If topicals can't drop total below 200,
+  // emit the cannot-revive warning and return without a revival step.
+  if (totalAfterTopicals >= REVIVAL_DAMAGE_THRESHOLD) {
+    patientStateWarnings.push(REVIVAL_WARN_CANNOT_REVIVE);
+    return {
+      ingredients: [],
+      physical,
+      cryo: null,
+      warnings,
+      label: '',
+      estimatedTimeSec: null,
+      solved: true,
+      patientStateWarnings,
+    };
+  }
+
+  // Project post-defib damage profile:
+  //   - Start from remaining (post-topical) damage.
+  //   - Apply defib heals (Asphyxiation -40).
+  //   - Apply defib inflicts (Shock +5).
+  const postDefib: Record<string, number> = {};
+  for (const [t, v] of topicalResult.remaining) {
+    if (v > 0) postDefib[t] = v;
+  }
+  const aspRem = postDefib.Asphyxiation ?? 0;
+  postDefib.Asphyxiation = Math.max(0, aspRem - DEFIB_HEAL_ASPHYXIATION);
+  if (postDefib.Asphyxiation === 0) delete postDefib.Asphyxiation;
+  postDefib.Shock = (postDefib.Shock ?? 0) + DEFIB_INFLICT_SHOCK;
+
+  const revivalStep: SolverRevivalStep = {
+    tool: 'defibrillator',
+    heals: { Asphyxiation: DEFIB_HEAL_ASPHYXIATION },
+    inflicts: { Shock: DEFIB_INFLICT_SHOCK },
+    note: DEFIB_NOTE,
+  };
+  patientStateWarnings.push(REVIVAL_WARN_DEFIB_PROFILE);
+  patientStateWarnings.push(REVIVAL_WARN_POST_REVIVAL);
+
+  // Re-solve the post-defib state with patientState=critical. We use the
+  // same filters as the caller for the chem side — but physical is handled
+  // above (dead-mode topicals) and cryo is a secondary concern for revival,
+  // so force chems-only on the post-revival pass. The medic can re-enter
+  // the profile for a full post-revival plan if they want cryo.
+  let postRevivalIngredients: SolverIngredient[] = [];
+  const hasPostDefibDamage = Object.values(postDefib).some((v) => v > 0);
+  if (hasPostDefibDamage) {
+    const postInput: SolverInput = {
+      damage: postDefib as DamageProfile,
+      species: input.species,
+      filters: {
+        chems: true,
+        physical: false, // already handled by dead-mode topicals
+        cryo: false, // secondary concern for post-revival
+      },
+      operatorName: input.operatorName,
+      includeRestricted: input.includeRestricted,
+      patientState: 'critical',
+    };
+    const postOut = computeMix(postInput, data);
+    postRevivalIngredients = [...postOut.ingredients];
+    // Forward post-revival warnings onto the top-level warnings list so the
+    // medic still sees razorium / OD / species-overlay advisories.
+    warnings.push(...postOut.warnings);
+  }
+
+  // Build a label for the revival flow: anchor on first post-revival
+  // ingredient if any, else "Revive" + estimated topical count.
+  const firstIng = postRevivalIngredients[0];
+  const firstReagent = firstIng
+    ? data.reagentsById.get(firstIng.reagentId)
+    : null;
+  const labelName = firstReagent
+    ? resolveFluentKey(data.fluent, firstReagent.name) ||
+      prettifyId(firstReagent.id)
+    : 'Revive';
+  const totalUnits = postRevivalIngredients.reduce((s, i) => s + i.units, 0);
+  const label =
+    postRevivalIngredients.length > 0
+      ? buildLabel({
+          reagentName:
+            postRevivalIngredients.length === 1
+              ? labelName
+              : `Mix${postRevivalIngredients.length}`,
+          units: totalUnits,
+          operatorName: input.operatorName,
+        })
+      : '';
+
+  // Estimate time: longest metabolization of post-revival ingredients.
+  let estimatedTimeSec: number | null = null;
+  if (postRevivalIngredients.length > 0) {
+    let longest = 0;
+    for (const ing of postRevivalIngredients) {
+      const r = data.reagentsById.get(ing.reagentId);
+      if (!r) continue;
+      const ticks = ing.units / r.metabolismRate;
+      const secs = ticks * TICK_SECONDS;
+      if (secs > longest) longest = secs;
+    }
+    estimatedTimeSec = Math.round(longest);
+  }
+
+  return {
+    ingredients: [],
+    physical,
+    cryo: null,
+    warnings,
+    label,
+    estimatedTimeSec,
+    solved: true,
+    revivalStep,
+    postRevivalIngredients,
+    patientStateWarnings,
+  };
+}
+
 // ---------- Main entry ----------
 
 export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
@@ -826,6 +1104,13 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
       estimatedTimeSec: null,
       solved: false,
     };
+  }
+
+  // Dead-patient revival flow (vs-3il.6). Switches the solver to topicals →
+  // defib → post-revival chems. Kept before the filter/all-off guard because
+  // dead-mode runs its own flow regardless of the top-level filter toggles.
+  if (input.patientState === 'dead') {
+    return computeDeadModeOutput(input, data, damage as DamageProfile);
   }
 
   // Filter: all-off case.

@@ -158,6 +158,21 @@ export interface SolverFilters {
   readonly cryo: boolean;
 }
 
+/**
+ * Patient state at the time of the scan. Drives solver behavior:
+ *
+ *  - `"alive"` (default): standard chem + physical + cryo plan; no revival step.
+ *  - `"critical"`: same plan shape as alive; the solver does NOT inject a
+ *    defib step, but surfaces any conditional-heal advisories that depend on
+ *    the patient being in a critical state (Epi notably).
+ *  - `"dead"`: revival flow. Chemicals don't metabolize in corpses, so the
+ *    primary pick is topicals-only, scaled to reduce projected total damage
+ *    below 200 (the in-game defibrillator threshold). Then the solver emits a
+ *    distinct `revivalStep` (defibrillator use) and a follow-up chem mix
+ *    (`postRevivalIngredients`) for the implicitly-critical post-revival state.
+ */
+export type PatientState = 'alive' | 'critical' | 'dead';
+
 export interface SolverInput {
   readonly damage: DamageProfile;
   /** Species ID (e.g. `Human`, `Moth`, `Vox`, `Diona`). Required. */
@@ -170,6 +185,11 @@ export interface SolverInput {
    * Omnizine, etc.) so its output is actually makeable by a chemist.
    */
   readonly includeRestricted?: boolean;
+  /**
+   * Patient state. Default `"alive"`. See `PatientState` for the dead-mode
+   * revival flow (vs-3il.6).
+   */
+  readonly patientState?: PatientState;
 }
 
 export interface SolverIngredient {
@@ -199,6 +219,22 @@ export interface SolverCryoEntry {
   readonly reason: string;
 }
 
+/**
+ * Discrete defibrillation step in the dead-patient revival flow. Rendered as
+ * its own panel between topicals and post-revival chems — distinct from the
+ * ingredients list because a defibrillator is an item, not a reagent. See
+ * vs-3il.6.
+ */
+export interface SolverRevivalStep {
+  readonly tool: 'defibrillator';
+  /** Damage healed by the shock (Asphyxiation: 40 in current data). */
+  readonly heals: Partial<DamageProfile>;
+  /** Damage inflicted as a side-effect (Shock: 5 in current data). */
+  readonly inflicts: Partial<DamageProfile>;
+  /** Operator-facing wiki-voice note, e.g. "Press Z to activate, then use on patient." */
+  readonly note: string;
+}
+
 export interface SolverOutput {
   readonly ingredients: readonly SolverIngredient[];
   readonly physical: readonly SolverPhysicalEntry[];
@@ -210,4 +246,26 @@ export interface SolverOutput {
   readonly estimatedTimeSec: number | null;
   /** True when the solver has produced a usable recipe. False = nothing to render. */
   readonly solved: boolean;
+  /**
+   * Defibrillation step, emitted ONLY when `patientState === "dead"` and a
+   * revival is projected to succeed (topicals got total damage below 200).
+   * See vs-3il.6.
+   */
+  readonly revivalStep?: SolverRevivalStep;
+  /**
+   * Post-revival chem mix, emitted ONLY when `patientState === "dead"`. The
+   * solver projects the post-defib damage profile (original − topical heals
+   * − revivalStep.heals + revivalStep.inflicts) and re-runs itself with
+   * `patientState: "critical"` to produce a follow-up chem plan. Side-effect
+   * warnings come through the same vs-3il.5 system. See vs-3il.6.
+   */
+  readonly postRevivalIngredients?: readonly SolverIngredient[];
+  /**
+   * Warnings specific to dead/critical modes — e.g. "Patient cannot be
+   * revived via available topicals; consult CMO." Kept separate from
+   * `warnings[]` so the UI can render them in the revival-flow panel
+   * (high-visibility) vs the standard mix warnings (low-priority advisory).
+   * See vs-3il.6.
+   */
+  readonly patientStateWarnings?: readonly string[];
 }
