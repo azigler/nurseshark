@@ -1,0 +1,37 @@
+# Build output
+dist/
+.vite/
+
+# Dependencies
+node_modules/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Vitest
+.vitest-cache/
+
+# Local harness symlinks (point into ../vacation-station-14/)
+# Local-only dev scaffolding — do not commit.
+.claude
+hooks
+.beads
