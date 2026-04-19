@@ -8,7 +8,6 @@
 import { useState } from 'react';
 import { CopyLabelButton } from '../components/CopyLabelButton';
 import { prettifyId, resolveFluentKey } from '../data/fluent';
-import { PHYSICAL_ITEMS_BY_ID } from '../data/physical-items';
 import { computeMix } from '../data/solver';
 import { useData } from '../data/store';
 import type {
@@ -242,7 +241,7 @@ export function SolverPage() {
                 <h3>Physical items</h3>
                 <ul className="solver-physical">
                   {output.physical.map((p) => {
-                    const it = PHYSICAL_ITEMS_BY_ID.get(p.itemId);
+                    const it = data.physicalItemsById.get(p.itemId);
                     return (
                       <li key={p.itemId}>
                         <strong>

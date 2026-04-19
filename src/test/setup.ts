@@ -20,6 +20,7 @@ const fixtures: Record<string, () => unknown> = {
   '/data/damage.json': () => loadJson('damage.json'),
   '/data/species.json': () => loadJson('species.json'),
   '/data/containers.json': () => loadJson('containers.json'),
+  '/data/physical-items.json': () => loadJson('physical-items.json'),
   '/data/fluent.json': () => loadJson('fluent.json'),
   '/data/meta.json': () => loadJson('meta.json'),
   '/data/sprites_manifest.json': () => loadJson('sprites_manifest.json'),

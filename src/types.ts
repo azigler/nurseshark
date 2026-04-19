@@ -80,6 +80,25 @@ export type FluentDict = Readonly<Record<string, string>>;
 export type SpriteManifest = Readonly<Record<string, SpriteManifestEntry>>;
 
 /**
+ * Physical medical item (Bandage, Gauze, Ointment, Regenerative Mesh,
+ * Medicated Suture, Blood Pack, Tourniquet, etc). Loaded from
+ * `public/data/physical-items.json`, extracted at build time from the VS14
+ * YAML. See `src/gen/resolve-physical-items.ts` for the source of truth.
+ */
+export interface PhysicalItem {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly healsPerApplication: Readonly<Record<string, number>>;
+  readonly damagePenalty: Readonly<Record<string, number>>;
+  readonly bloodlossModifier: number;
+  readonly modifyBloodLevel: number;
+  readonly stackSize: number;
+  readonly ironMetabolism: boolean;
+  readonly sourcePrototypeFile: string;
+}
+
+/**
  * Damage-driven solver input. Mirrors a health-scanner readout: damage
  * amounts per treatable type, a species selector, three filter checkboxes
  * for output composition, and an optional operator name for the label.

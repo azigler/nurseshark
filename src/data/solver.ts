@@ -43,6 +43,7 @@ import { buildLabel } from '../components/CopyLabelButton';
 import type {
   DamageProfile,
   DamageTypeId,
+  PhysicalItem,
   Reagent,
   SolverCryoEntry,
   SolverIngredient,
@@ -51,7 +52,6 @@ import type {
   SolverPhysicalEntry,
 } from '../types';
 import { prettifyId, resolveFluentKey } from './fluent';
-import { PHYSICAL_ITEMS } from './physical-items';
 import type { DataBundle } from './store';
 
 // ---------- Constants ----------
@@ -476,9 +476,41 @@ function selectCryoReagent(
 
 // ---------- Physical items ----------
 
+/**
+ * Fold Healing's `bloodlossModifier` and `modifyBloodLevel` into a synthetic
+ * per-application Bloodloss heal amount for solver purposes. The SS14 game
+ * models these as separate systems (active-bleed slowdown vs blood pool
+ * restoration), but from the medic's POV they both reduce the displayed
+ * Bloodloss reading over time. We conservatively fold them at their raw
+ * magnitudes (e.g. BloodPack's modifyBloodLevel: 15 → 15 Bloodloss), so the
+ * solver recommends a roughly accurate count.
+ */
+function syntheticBloodlossHeal(item: PhysicalItem): number {
+  const fromDamage = item.healsPerApplication.Bloodloss ?? 0;
+  // bloodlossModifier is negative for healing; flip sign.
+  const fromBleedModifier =
+    item.bloodlossModifier < 0 ? Math.abs(item.bloodlossModifier) : 0;
+  // modifyBloodLevel > 0 tops up blood volume directly (BloodPack: 15).
+  const fromBloodLevel = item.modifyBloodLevel > 0 ? item.modifyBloodLevel : 0;
+  return fromDamage + fromBleedModifier + fromBloodLevel;
+}
+
+/**
+ * Effective per-type heal including bloodloss synthetics. Anything not
+ * Bloodloss comes straight from `healsPerApplication`.
+ */
+function effectiveHealPerApplication(
+  item: PhysicalItem,
+  type: DamageTypeId,
+): number {
+  if (type === 'Bloodloss') return syntheticBloodlossHeal(item);
+  return item.healsPerApplication[type] ?? 0;
+}
+
 function pickPhysicalItems(
   damage: DamageProfile,
   input: SolverInput,
+  data: DataBundle,
 ): { physical: SolverPhysicalEntry[]; remaining: Map<DamageTypeId, number> } {
   const remaining = new Map<DamageTypeId, number>();
   for (const t of TREATABLE_DAMAGE_TYPES) {
@@ -487,50 +519,65 @@ function pickPhysicalItems(
   }
   const out: SolverPhysicalEntry[] = [];
 
-  // Score items by total coverage of the REMAINING damage, pick greedily.
-  // We iterate until no item usefully covers any remaining damage.
-  const sortedItems = [...PHYSICAL_ITEMS].sort((a, b) => {
-    const scoreA = Object.values(a.healsPerApplication).reduce(
-      (s, v) => s + v,
-      0,
-    );
-    const scoreB = Object.values(b.healsPerApplication).reduce(
-      (s, v) => s + v,
-      0,
-    );
+  // Score items by total per-application coverage (including synthetic
+  // Bloodloss heal from bloodlossModifier + modifyBloodLevel). Ties fall back
+  // to sum of raw healsPerApplication so Ointment still edges out Gauze on
+  // burns even though their Bloodloss synthetics tie.
+  const sortedItems = [...data.physicalItems].sort((a, b) => {
+    const scoreA =
+      Object.values(a.healsPerApplication).reduce((s, v) => s + v, 0) +
+      syntheticBloodlossHeal(a);
+    const scoreB =
+      Object.values(b.healsPerApplication).reduce((s, v) => s + v, 0) +
+      syntheticBloodlossHeal(b);
     return scoreB - scoreA;
   });
 
-  // Snapshot input per-type damage so reason strings only cite types actually
-  // in the input profile (not the item's full coverage).
-  const inputByType = new Map<string, number>();
-  for (const t of TREATABLE_DAMAGE_TYPES) {
-    const v = damage[t] ?? 0;
-    if (v > 0) inputByType.set(t, v);
-  }
-
   for (const item of sortedItems) {
-    // Skip iron-metabolism items for incompatible species.
+    // Skip iron-metabolism items for incompatible species. In current VS14
+    // data none of the items have this flag set — see the resolver's comment.
     if (item.ironMetabolism && NON_IRON_METABOLISM_SPECIES.has(input.species)) {
       continue;
     }
+    // Items that INFLICT damage they don't also heal (e.g. Tourniquet adds
+    // Blunt + Asphyxiation and ONLY "heals" bleeding) are still useful for
+    // their bloodloss stop, but we only propose them when Bloodloss is on
+    // the damage profile — using a tourniquet on a non-bleeding patient is
+    // actively harmful.
+    const healsOnlyViaBleed =
+      Object.keys(item.healsPerApplication).length === 0 &&
+      item.bloodlossModifier < 0;
+    if (healsOnlyViaBleed && (remaining.get('Bloodloss') ?? 0) <= 0) {
+      continue;
+    }
+    if (
+      Object.keys(item.damagePenalty).length > 0 &&
+      (remaining.get('Bloodloss') ?? 0) <= 0
+    ) {
+      // Item inflicts damage (e.g. Tourniquet Blunt +5) — only pick when
+      // there's active Bloodloss to justify the trade.
+      continue;
+    }
+
     const healedByType = new Map<string, number>();
+    const stackCap = Math.max(item.stackSize, 10);
     let count = 0;
-    while (count < 10) {
-      // hard cap — no more than 10 of any single item
+    while (count < stackCap) {
+      // Hard cap = larger of stack size or 10 applications.
       let usefulHeal = 0;
-      for (const [t, amount] of Object.entries(item.healsPerApplication)) {
-        if (!damageTypeIsTreatable(t)) continue;
+      for (const t of TREATABLE_DAMAGE_TYPES) {
+        const per = effectiveHealPerApplication(item, t);
+        if (per <= 0) continue;
         const rem = remaining.get(t) ?? 0;
-        if (rem > 0) usefulHeal += Math.min(rem, amount);
+        if (rem > 0) usefulHeal += Math.min(rem, per);
       }
       if (usefulHeal <= 0) break;
-      // Apply this item: reduce remaining damage.
-      for (const [t, amount] of Object.entries(item.healsPerApplication)) {
-        if (!damageTypeIsTreatable(t)) continue;
+      for (const t of TREATABLE_DAMAGE_TYPES) {
+        const per = effectiveHealPerApplication(item, t);
+        if (per <= 0) continue;
         const rem = remaining.get(t) ?? 0;
         if (rem > 0) {
-          const applied = Math.min(rem, amount);
+          const applied = Math.min(rem, per);
           healedByType.set(t, (healedByType.get(t) ?? 0) + applied);
           remaining.set(t, rem - applied);
         }
@@ -540,7 +587,7 @@ function pickPhysicalItems(
     if (count > 0) {
       const healedSummary = [...healedByType.entries()]
         .filter(([, a]) => a > 0)
-        .map(([t, a]) => `${a} ${t}`)
+        .map(([t, a]) => `${Math.round(a * 10) / 10} ${t}`)
         .join(' + ');
       out.push({
         itemId: item.id,
@@ -615,7 +662,7 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
   }
   const physicalOut: SolverPhysicalEntry[] = [];
   if (physicalOn) {
-    const physResult = pickPhysicalItems(damage as DamageProfile, input);
+    const physResult = pickPhysicalItems(damage as DamageProfile, input, data);
     physicalOut.push(...physResult.physical);
     remainingDamage = physResult.remaining;
   }

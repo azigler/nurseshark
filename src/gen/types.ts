@@ -86,6 +86,29 @@ export interface RawEntityPrototype {
   >;
 }
 
+/**
+ * Shape of a `- type: Healing` component entry as it appears in the parsed
+ * prototype. All fields optional so the resolver can deal with partial
+ * entries (SS14 permits omitting modifiers).
+ */
+export interface RawHealingComponent {
+  readonly type: 'Healing';
+  readonly damage?: {
+    readonly types?: Record<string, number>;
+    readonly groups?: Record<string, number>;
+  };
+  readonly bloodlossModifier?: number;
+  readonly modifyBloodLevel?: number;
+  readonly damageContainers?: readonly string[];
+}
+
+/** Shape of a `- type: Stack` component entry. */
+export interface RawStackComponent {
+  readonly type: 'Stack';
+  readonly stackType?: string;
+  readonly count?: number;
+}
+
 // ---------------- Output JSON shapes (consumed by frontend + solver) ----------------
 
 export interface OutReagentHealEntry {
@@ -164,6 +187,59 @@ export interface OutMeta {
   readonly nursesharkVersion: string;
   readonly builtAt: string;
   readonly sourcePath: string;
+}
+
+/**
+ * Physical medical item the solver can recommend (Bandage, Gauze, Ointment,
+ * Regenerative Mesh, Medicated Suture, Blood Pack, etc). Verified from the
+ * VS14 YAML at `Resources/Prototypes/Entities/Objects/Specific/Medical/`
+ * rather than hand-modeled, so drift against upstream is caught at build.
+ */
+export interface OutPhysicalItem {
+  /** Entity prototype ID (e.g. `Bloodpack`, `MedicatedSuture`). */
+  readonly id: string;
+  /** Resolved display name (prettified or from the entity's `name:` field). */
+  readonly name: string;
+  /** Optional entity `description:`; used for tooltips. */
+  readonly description: string | null;
+  /**
+   * Damage-type → absolute-value heal delivered per single use (YAML negative
+   * values flipped to positive). Only negative (healing) entries are kept;
+   * a positive value in YAML (e.g. Tourniquet's `Blunt: 5`) would be a damage
+   * penalty and is captured in `damagePenalty` instead.
+   */
+  readonly healsPerApplication: Readonly<Record<string, number>>;
+  /**
+   * Positive damage an item inflicts per use (Tourniquet hurts). Mirrors
+   * healsPerApplication for types with positive YAML values.
+   */
+  readonly damagePenalty: Readonly<Record<string, number>>;
+  /**
+   * Healing's `bloodlossModifier` — SS14 distinguishes this from a Bloodloss
+   * damage heal. Negative slows active bleeding (e.g. Gauze: -10). Keeping
+   * the raw sign so the solver can display it as "stops bleeding" vs "inflicts".
+   */
+  readonly bloodlossModifier: number;
+  /**
+   * Healing's `modifyBloodLevel` — raises the patient's blood pool directly
+   * (different mechanic from Bloodloss damage). Positive adds blood (e.g.
+   * BloodPack: 15). Species-agnostic: the Bloodstream component is on every
+   * humanoid and TryModifyBloodLevel does not gate on species.
+   */
+  readonly modifyBloodLevel: number;
+  /** Units dispensed per stack entry (YAML `Stack.count`). 1 if not stacked. */
+  readonly stackSize: number;
+  /**
+   * True if healing this item provides requires iron metabolism — i.e. the
+   * healing mechanism is species-gated (Moth/Vox/Diona/Slime/Arachnid can't
+   * metabolize it). BloodPack is NOT iron-gated in the VS14 HealingSystem
+   * (ModifyBloodLevel operates on the BloodstreamComponent directly and is
+   * species-agnostic per SharedBloodstreamSystem.TryModifyBloodLevel). The
+   * field is kept on the schema so future species-gated items can opt in.
+   */
+  readonly ironMetabolism: boolean;
+  /** Path under `Resources/...` (relative to VS14 root) for drift audits. */
+  readonly sourcePrototypeFile: string;
 }
 
 export interface SpriteManifestEntry {

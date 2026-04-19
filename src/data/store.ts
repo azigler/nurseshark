@@ -8,6 +8,7 @@ import type {
   DamageType,
   FluentDict,
   Meta,
+  PhysicalItem,
   Reaction,
   Reagent,
   Species,
@@ -20,6 +21,7 @@ export interface DataBundle {
   readonly damage: readonly DamageType[];
   readonly species: readonly Species[];
   readonly containers: readonly Container[];
+  readonly physicalItems: readonly PhysicalItem[];
   readonly fluent: FluentDict;
   readonly meta: Meta;
   readonly sprites: SpriteManifest;
@@ -29,6 +31,7 @@ export interface DataBundle {
   readonly damageById: ReadonlyMap<string, DamageType>;
   readonly speciesById: ReadonlyMap<string, Species>;
   readonly containersById: ReadonlyMap<string, Container>;
+  readonly physicalItemsById: ReadonlyMap<string, PhysicalItem>;
   /** damage group id -> member type ids. */
   readonly damageGroupMembers: ReadonlyMap<string, readonly string[]>;
   /** reagent id -> reactions where it appears in products. */
@@ -65,6 +68,7 @@ export async function loadDataBundle(): Promise<DataBundle> {
     damage,
     species,
     containers,
+    physicalItems,
     fluent,
     meta,
     sprites,
@@ -74,6 +78,7 @@ export async function loadDataBundle(): Promise<DataBundle> {
     fetchJson<readonly DamageType[]>('damage.json'),
     fetchJson<readonly Species[]>('species.json'),
     fetchJson<readonly Container[]>('containers.json'),
+    fetchJson<readonly PhysicalItem[]>('physical-items.json'),
     fetchJson<FluentDict>('fluent.json'),
     fetchJson<Meta>('meta.json'),
     fetchJson<SpriteManifest>('sprites_manifest.json'),
@@ -84,6 +89,7 @@ export async function loadDataBundle(): Promise<DataBundle> {
   const damageById = new Map(damage.map((d) => [d.id, d]));
   const speciesById = new Map(species.map((s) => [s.id, s]));
   const containersById = new Map(containers.map((c) => [c.id, c]));
+  const physicalItemsById = new Map(physicalItems.map((p) => [p.id, p]));
 
   // Damage group membership: derived from damage.group on each type.
   const damageGroupMembers = new Map<string, string[]>();
@@ -117,6 +123,7 @@ export async function loadDataBundle(): Promise<DataBundle> {
     damage,
     species,
     containers,
+    physicalItems,
     fluent,
     meta,
     sprites,
@@ -125,6 +132,7 @@ export async function loadDataBundle(): Promise<DataBundle> {
     damageById,
     speciesById,
     containersById,
+    physicalItemsById,
     damageGroupMembers,
     reactionsProducing,
     reactionsConsuming,

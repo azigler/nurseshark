@@ -11,6 +11,7 @@ import type {
   DamageType,
   FluentDict,
   Meta,
+  PhysicalItem,
   Reaction,
   Reagent,
   Species,
@@ -30,6 +31,9 @@ function buildBundle(): DataBundle {
   const damage = loadJson<readonly DamageType[]>('damage.json');
   const species = loadJson<readonly Species[]>('species.json');
   const containers = loadJson<readonly Container[]>('containers.json');
+  const physicalItems = loadJson<readonly PhysicalItem[]>(
+    'physical-items.json',
+  );
   const fluent = loadJson<FluentDict>('fluent.json');
   const meta = loadJson<Meta>('meta.json');
   const sprites = loadJson<SpriteManifest>('sprites_manifest.json');
@@ -39,6 +43,7 @@ function buildBundle(): DataBundle {
   const damageById = new Map(damage.map((d) => [d.id, d]));
   const speciesById = new Map(species.map((s) => [s.id, s]));
   const containersById = new Map(containers.map((c) => [c.id, c]));
+  const physicalItemsById = new Map(physicalItems.map((p) => [p.id, p]));
 
   const damageGroupMembers = new Map<string, string[]>();
   for (const d of damage) {
@@ -68,6 +73,7 @@ function buildBundle(): DataBundle {
     damage,
     species,
     containers,
+    physicalItems,
     fluent,
     meta,
     sprites,
@@ -76,6 +82,7 @@ function buildBundle(): DataBundle {
     damageById,
     speciesById,
     containersById,
+    physicalItemsById,
     damageGroupMembers,
     reactionsProducing,
     reactionsConsuming,
@@ -297,6 +304,107 @@ describe('computeMix', () => {
       expect(bicar.units).toBeLessThanOrEqual(15);
       expect(bicar.units).toBeGreaterThanOrEqual(5);
     }
+  });
+
+  // Scenario 10: physical items are loaded from public/data/physical-items.json
+  // (verified from VS14 YAML, not hand-guessed) and the solver picks the
+  // right item for a given damage type. Assertions are structural (right
+  // item, count scales) rather than numeric fixtures, so future YAML
+  // adjustments don't require test surgery.
+  it('picks Ointment or Regenerative Mesh for a burn profile', () => {
+    const out = computeMix(
+      {
+        damage: { Heat: 20 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    expect(out.physical.length).toBeGreaterThan(0);
+    const burnItems = out.physical.filter((p) =>
+      ['Ointment', 'RegenerativeMesh', 'AloeCream'].includes(p.itemId),
+    );
+    expect(burnItems.length).toBeGreaterThan(0);
+  });
+
+  it('picks Brutepack or MedicatedSuture for a brute-damage profile', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 20 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    expect(out.physical.length).toBeGreaterThan(0);
+    const bruteItems = out.physical.filter((p) =>
+      ['Brutepack', 'MedicatedSuture'].includes(p.itemId),
+    );
+    expect(bruteItems.length).toBeGreaterThan(0);
+  });
+
+  it('picks Bloodpack / Gauze / MedicatedSuture for bloodloss (no iron-gating)', () => {
+    const out = computeMix(
+      {
+        damage: { Bloodloss: 40 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    expect(out.physical.length).toBeGreaterThan(0);
+    // Each of these items touches Bloodloss in the YAML — via direct heal
+    // (Bloodpack), modifyBloodLevel (Bloodpack), or bloodlossModifier (Gauze,
+    // MedicatedSuture, Tourniquet). Verify at least one landed.
+    const bleedStoppers = out.physical.filter((p) =>
+      ['Bloodpack', 'Gauze', 'MedicatedSuture', 'Tourniquet'].includes(
+        p.itemId,
+      ),
+    );
+    expect(bleedStoppers.length).toBeGreaterThan(0);
+  });
+
+  it('physical item count scales with damage amount', () => {
+    const small = computeMix(
+      {
+        damage: { Heat: 5 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    const large = computeMix(
+      {
+        damage: { Heat: 40 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    const smallOintment = small.physical.find(
+      (p) => p.itemId === 'Ointment' || p.itemId === 'RegenerativeMesh',
+    );
+    const largeOintment = large.physical.find(
+      (p) => p.itemId === 'Ointment' || p.itemId === 'RegenerativeMesh',
+    );
+    expect(smallOintment).toBeDefined();
+    expect(largeOintment).toBeDefined();
+    if (smallOintment && largeOintment) {
+      expect(largeOintment.count).toBeGreaterThan(smallOintment.count);
+    }
+  });
+
+  it('does not pick Tourniquet when Bloodloss is zero', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 20 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    const tourniquet = out.physical.find((p) => p.itemId === 'Tourniquet');
+    expect(tourniquet).toBeUndefined();
   });
 
   // Label string format is included in the pro-tips style.

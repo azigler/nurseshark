@@ -1,68 +1,11 @@
-// Physical medical items the Nurseshark solver can recommend. These are NOT
-// in the YAML-sourced data pipeline (which only covers reagents, reactions,
-// damage types, species, containers) — they're hand-modeled here from the
-// SS14 YAML at Resources/Prototypes/Entities/Objects/Specific/Medical/.
+// Physical medical items (Bandage, Gauze, Ointment, Regenerative Mesh,
+// Medicated Suture, Blood Pack, Tourniquet, etc). As of vs-3il.2 this module
+// NO LONGER hand-models heal amounts — the full list is extracted at build
+// time by `src/gen/resolve-physical-items.ts` from the VS14 YAML and shipped
+// as `public/data/physical-items.json`. Load it via `useData()` /
+// `data.physicalItems` or `data.physicalItemsById`.
 //
-// Keep this list pragmatic: small, focused on items a medic actually uses in
-// the field. Damage-type coverage + per-application amounts are best-effort
-// estimates aligned with in-game behavior. If amounts drift vs game data,
-// update here; the solver consumes `healsPerApplication` directly.
+// This file stays as a tiny shim so any legacy `import { PhysicalItem }`
+// still resolves. The canonical type definition lives in `../types.ts`.
 
-export interface PhysicalItem {
-  readonly id: string;
-  readonly name: string;
-  readonly description: string;
-  /** Damage-type → total heal delivered per single application. */
-  readonly healsPerApplication: Readonly<Record<string, number>>;
-  /**
-   * Whether this item restores Blood level via iron-metabolism (true) or via
-   * a species-agnostic mechanism (false). Blood Packs in SS14 transfuse
-   * actual blood, which is species-specific — we flag true so the Moth/Vox/
-   * Diona overlay can swap them out.
-   */
-  readonly ironMetabolism?: boolean;
-}
-
-export const PHYSICAL_ITEMS: readonly PhysicalItem[] = [
-  {
-    id: 'Bandage',
-    name: 'Bandage',
-    description: 'Staunches Bloodloss and soothes some Blunt bruising.',
-    healsPerApplication: { Bloodloss: 10, Blunt: 5 },
-  },
-  {
-    id: 'Gauze',
-    name: 'Gauze',
-    description: 'Absorbent gauze — primarily for Bloodloss control.',
-    healsPerApplication: { Bloodloss: 15 },
-  },
-  {
-    id: 'Ointment',
-    name: 'Ointment',
-    description: 'Topical salve for Heat-related burns.',
-    healsPerApplication: { Heat: 10 },
-  },
-  {
-    id: 'RegenerativeMesh',
-    name: 'Regenerative Mesh',
-    description: 'Advanced burn dressing — covers Heat and Shock damage.',
-    healsPerApplication: { Heat: 15, Shock: 10 },
-  },
-  {
-    id: 'MedicatedSuture',
-    name: 'Medicated Suture',
-    description: 'Closes brute wounds — Blunt, Piercing, Slash.',
-    healsPerApplication: { Blunt: 10, Piercing: 10, Slash: 10 },
-  },
-  {
-    id: 'BloodPack',
-    name: 'Blood Pack',
-    description: 'Transfusion unit. Species-specific blood type required.',
-    healsPerApplication: { Bloodloss: 50 },
-    ironMetabolism: true,
-  },
-];
-
-export const PHYSICAL_ITEMS_BY_ID: ReadonlyMap<string, PhysicalItem> = new Map(
-  PHYSICAL_ITEMS.map((i) => [i.id, i]),
-);
+export type { PhysicalItem } from '../types';

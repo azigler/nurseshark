@@ -8,6 +8,7 @@ import { buildSpritePack } from './build-spritesheet';
 import { resolveContainers } from './resolve-containers';
 import { resolveDamage } from './resolve-damage';
 import { resolveFluent } from './resolve-fluent';
+import { resolvePhysicalItems } from './resolve-physical-items';
 import { resolveReactions } from './resolve-reactions';
 import { resolveReagents } from './resolve-reagents';
 import { resolveSpecies } from './resolve-species';
@@ -85,6 +86,10 @@ async function main() {
   const containers = resolveContainers(sources.vs14Path);
   console.log(`  - ${containers.length} containers`);
 
+  console.log('[nurseshark] reading physical items...');
+  const physicalItems = resolvePhysicalItems(sources.vs14Path);
+  console.log(`  - ${physicalItems.length} physical items`);
+
   console.log('[nurseshark] resolving Fluent messages...');
   const fluent = resolveFluent(sources.vs14Path);
   console.log(`  - ${Object.keys(fluent).length} Fluent keys bundled`);
@@ -124,6 +129,7 @@ async function main() {
   writeJson(outDir, 'damage', damageTypes);
   writeJson(outDir, 'species', species);
   writeJson(outDir, 'containers', containersFinal);
+  writeJson(outDir, 'physical-items', physicalItems);
   writeJson(outDir, 'sprites_manifest', sprites.manifest);
   writeJson(outDir, 'fluent', fluent);
   writeJson(outDir, 'meta', meta);
