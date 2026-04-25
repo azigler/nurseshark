@@ -1649,4 +1649,134 @@ describe('computeAlternatives', () => {
       expect(prevIds).not.toEqual(currIds);
     }
   });
+
+  // =============================================================
+  // vs-xvp.7: each card surfaces BOTH a chem mix AND physical items.
+  // =============================================================
+  //
+  // Pre-fix bug: the chem pass was reading damage POST-physical-pass, so
+  // when topicals fully covered a damage type (e.g. 9× Brutepack on 45
+  // Blunt) the chem pass had nothing to do. The fridge-stock card showed
+  // bandages with NO Bicaridine; the standard / exotic cards collapsed
+  // into the same empty-chem state and were duplicate-suppressed down to
+  // a single items-only card. Each card must now surface a complete
+  // chem mix AND complete physical-item plan against the FULL damage
+  // profile, in parallel.
+
+  it('vs-xvp.7: tier-1 alternative surfaces Bicaridine alongside Brutepack for pure Blunt', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Blunt: 45 },
+        species: 'Human',
+        filters: { chems: true, physical: true, cryo: true },
+      },
+      data,
+    );
+    const tier1 = result.alternatives.find((a) => a.tierCeiling === 1);
+    expect(tier1).toBeDefined();
+    // Both halves of the card must be populated independently.
+    expect(tier1?.output.ingredients.length).toBeGreaterThan(0);
+    expect(tier1?.output.physical.length).toBeGreaterThan(0);
+    // Bicaridine is the canonical tier-1 brute med — must be in the chem
+    // mix even though Brutepack covers Blunt physically.
+    const chemIds = tier1?.output.ingredients.map((i) => i.reagentId) ?? [];
+    expect(chemIds).toContain('Bicaridine');
+    // Every chem ingredient in the tier-1 card must be tier 1.
+    for (const ing of tier1?.output.ingredients ?? []) {
+      expect(ing.tier).toBe(1);
+    }
+    // Brutepack should still be in the physical-item plan.
+    const itemIds = tier1?.output.physical.map((p) => p.itemId) ?? [];
+    expect(itemIds).toContain('Brutepack');
+  });
+
+  it('vs-xvp.7: tier-1 burn profile surfaces Dermaline alongside AloeCream / Ointment', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Heat: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: true, cryo: false },
+      },
+      data,
+    );
+    const tier1 = result.alternatives.find((a) => a.tierCeiling === 1);
+    expect(tier1).toBeDefined();
+    expect(tier1?.output.ingredients.length).toBeGreaterThan(0);
+    expect(tier1?.output.physical.length).toBeGreaterThan(0);
+    const chemIds = tier1?.output.ingredients.map((i) => i.reagentId) ?? [];
+    // Dermaline is the canonical tier-1 burn med (Kelotane is also tier 1
+    // and acceptable; Dermaline wins on rate). Either is OK.
+    expect(chemIds.some((id) => id === 'Dermaline' || id === 'Kelotane')).toBe(
+      true,
+    );
+  });
+
+  it('vs-xvp.7: tier-1 mixed brute+burn surfaces Tricordrazine alongside both item lanes', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Blunt: 30, Heat: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: true, cryo: false },
+      },
+      data,
+    );
+    const tier1 = result.alternatives.find((a) => a.tierCeiling === 1);
+    expect(tier1).toBeDefined();
+    // Chem mix non-empty AND physical-item plan non-empty.
+    expect(tier1?.output.ingredients.length).toBeGreaterThan(0);
+    expect(tier1?.output.physical.length).toBeGreaterThan(0);
+    // Tricordrazine is a tier-1 broad healer; it or a brute+burn pair
+    // (Bicaridine + Dermaline/Kelotane) is acceptable.
+    const chemIds = tier1?.output.ingredients.map((i) => i.reagentId) ?? [];
+    const hasTricord = chemIds.includes('Tricordrazine');
+    const hasBrutePlusBurn =
+      chemIds.includes('Bicaridine') &&
+      (chemIds.includes('Dermaline') || chemIds.includes('Kelotane'));
+    expect(hasTricord || hasBrutePlusBurn).toBe(true);
+  });
+
+  it('vs-xvp.7: tier-1 ceiling with no covering chem emits explicit "no fridge-stock chem covers X" warning', () => {
+    const result = computeAlternatives(
+      {
+        // Cellular has no tier-1 chem (Doxarubixadone is tier 2,
+        // Phalanximine is tier 2). Tier-1 card must call this out
+        // explicitly rather than silently returning an empty chem list.
+        damage: { Cellular: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: true, cryo: false },
+      },
+      data,
+    );
+    const tier1 = result.alternatives.find((a) => a.tierCeiling === 1);
+    expect(tier1).toBeDefined();
+    expect(tier1?.output.ingredients).toHaveLength(0);
+    expect(tier1?.partial).toBe(true);
+    const hasExplicit = tier1?.output.warnings.some((w) =>
+      /No fridge-stock chem covers/.test(w),
+    );
+    expect(hasExplicit).toBe(true);
+  });
+
+  it('vs-xvp.7: standard and exotic cards still produce non-empty chem mixes when items would consume the damage', () => {
+    // Pre-fix the duplicate-suppression collapsed all three cards into one
+    // when items consumed the damage. After the fix the standard card may
+    // still be a duplicate of tier-1 IF tier-1 already fully covered the
+    // profile (Bicaridine for pure Blunt) — that's correct behavior. But
+    // for a profile where higher tiers add value (e.g. Heat, where cryo
+    // is tier 2+), at least one higher-tier card must appear.
+    const result = computeAlternatives(
+      {
+        damage: { Heat: 45 },
+        species: 'Human',
+        filters: { chems: true, physical: true, cryo: true },
+      },
+      data,
+    );
+    expect(result.alternatives.length).toBeGreaterThanOrEqual(2);
+    // Every visible alternative carries chems — none collapsed to empty
+    // due to physical pass eating the damage.
+    for (const alt of result.alternatives) {
+      expect(alt.output.ingredients.length).toBeGreaterThan(0);
+    }
+  });
 });

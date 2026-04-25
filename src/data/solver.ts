@@ -1317,21 +1317,36 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
     };
   }
 
-  // ---- Physical first (if enabled) — reduces remaining damage before chem pass.
-  let remainingDamage = new Map<DamageTypeId, number>();
-  for (const t of TREATABLE_DAMAGE_TYPES) {
-    const v = damage[t] ?? 0;
-    if (v > 0) remainingDamage.set(t, v);
-  }
+  // ---- Physical pass (if enabled) — runs INDEPENDENTLY of the chem pass.
+  //
+  // vs-xvp.7: previously the physical pass mutated a shared `remainingDamage`
+  // map that the chem pass then operated on, so when topicals fully covered a
+  // damage type (e.g. 9× Brutepack wiping out 45 Blunt) the chem pass saw
+  // `remaining = 0` and skipped the type entirely. Result: the fridge-stock
+  // card showed bandages with NO Bicaridine, the standard / exotic cards
+  // collapsed into the same empty-chem mix, and the duplicate-suppression
+  // pruned them all down to a single items-only card.
+  //
+  // The medic uses both lanes — chems from the fridge AND items from the
+  // medkit — so each card now surfaces a complete chem mix AND a complete
+  // physical-item plan against the FULL damage profile, in parallel. The
+  // "right answer" depends on the medic's actual inventory: they pick one
+  // lane, the other, or split between them. Keeping the lanes independent
+  // also lets the chem pass at tier-1 surface Bicaridine etc. even when
+  // tier-1 topicals would otherwise eat the whole profile.
   const physicalOut: SolverPhysicalEntry[] = [];
   if (physicalOn) {
     const physResult = pickPhysicalItems(damage as DamageProfile, input, data);
     physicalOut.push(...physResult.physical);
-    remainingDamage = physResult.remaining;
   }
-  // Snapshot the post-physical pre-chem remaining bloodloss — used by the
-  // species overlay, which shouldn't care about damage the chem pass later
-  // virtually-covered using an iron-metabolism reagent.
+  // Chem pass starts from the full damage profile — independent of physical.
+  const remainingDamage = new Map<DamageTypeId, number>();
+  for (const t of TREATABLE_DAMAGE_TYPES) {
+    const v = damage[t] ?? 0;
+    if (v > 0) remainingDamage.set(t, v);
+  }
+  // Bloodloss pre-chem is the full input value; the species overlay uses
+  // it to size the species-correct restorer (Saline / Copper / Ichor).
   const bloodlossBeforeChems = remainingDamage.get('Bloodloss') ?? 0;
 
   // ---- Chem pass (if enabled).
@@ -1348,6 +1363,12 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
   // Over-damage flags: track types that can't be covered in a single OD-legal dose.
   const partialHealTypes = new Set<DamageTypeId>();
   const uncoveredForCryo = new Map<DamageTypeId, number>();
+  // vs-xvp.7: damage types for which NO chem candidate at all exists at the
+  // current tier ceiling (e.g. Cellular at tier-1 — Doxarubixadone is tier 2).
+  // Distinct from `partialHealTypes`, which includes OD-capped under-heals
+  // where SOME chem partially covered. Drives the "no fridge-stock chem
+  // covers X" warning in the tier-1 partial path.
+  const noChemCandidateTypes = new Set<DamageTypeId>();
 
   if (chems) {
     const pickOrder = [...PICK_ORDER].filter(
@@ -1394,8 +1415,9 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
         tierCeiling,
       );
       if (cands.length === 0) {
-        // No reagent treats this type.
+        // No reagent treats this type at the current tier ceiling.
         partialHealTypes.add(type);
+        noChemCandidateTypes.add(type);
         uncoveredForCryo.set(type, leftover);
         continue;
       }
@@ -1613,9 +1635,34 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
       ...partialHealTypes,
       ...uncoveredForCryo.keys(),
     ]);
-    warnings.push(
-      `Partial heal for ${[...types].join(', ')} — administer this mix and re-scan. Consider enabling cryo for full coverage.`,
-    );
+    // vs-xvp.7: when the tier ceiling is 1 (fridge-stock card) AND the
+    // uncovered damage types have NO tier-1 chem candidate at all (e.g.
+    // Cellular, where Doxarubixadone is tier 2), phrase the warning
+    // explicitly so the medic knows to pick a higher-tier card or rely on
+    // the physical-item lane. Distinct from a partial heal where SOME
+    // tier-1 chem covered the type but couldn't reach full damage (e.g.
+    // 45 Heat exceeds Dermaline's OD cap) — that case keeps the generic
+    // "Partial heal for X — re-scan" voice.
+    if (chems && inputTierCeiling === 1 && noChemCandidateTypes.size > 0) {
+      const typeList = [...noChemCandidateTypes].join(', ');
+      warnings.push(
+        `No fridge-stock chem covers ${typeList} — see physical items in this card or pick the standard / exotic-allowed card for chem options.`,
+      );
+      // If there are ALSO partial-heal types (chem covered part but not all),
+      // emit the standard warning for them so the medic sees both signals.
+      const partialOnly = [...types].filter(
+        (t) => !noChemCandidateTypes.has(t),
+      );
+      if (partialOnly.length > 0) {
+        warnings.push(
+          `Partial heal for ${partialOnly.join(', ')} — administer this mix and re-scan. Consider enabling cryo for full coverage.`,
+        );
+      }
+    } else {
+      warnings.push(
+        `Partial heal for ${[...types].join(', ')} — administer this mix and re-scan. Consider enabling cryo for full coverage.`,
+      );
+    }
   }
 
   // ---- Species overlay may inject Saline even when bloodloss healer
@@ -1755,15 +1802,20 @@ function buildAlternative(
     },
     data,
   );
-  // Detect partial coverage from warnings. The standard-flow partial
-  // signal is `Partial heal for <types> — administer this mix and re-scan`
-  // (emitted when the chem pass left damage uncovered AND the cryo lane
-  // didn't take it). The OD-meets-threshold warning ("split doses or
-  // accept partial heal") is NOT a coverage signal — the medic accepting
-  // the OD-capped dose still gets full coverage when healPerUnit × OD ≥
-  // damage, so we exclude it from the regex.
+  // Detect partial coverage from warnings. Two phrasings:
+  //   - generic "Partial heal for <types> — re-scan" (emitted when chems +
+  //     cryo together left damage uncovered).
+  //   - vs-xvp.7 tier-1-specific "No fridge-stock chem covers <types>"
+  //     (emitted when the fridge-stock card has no chem option for some
+  //     damage type — physical items or the next-tier card cover it).
+  // The OD-meets-threshold warning ("split doses or accept partial heal")
+  // is NOT a coverage signal — the medic accepting the OD-capped dose
+  // still gets full coverage when healPerUnit × OD ≥ damage, so we exclude
+  // it from the regex.
   const partial =
-    output.warnings.some((w) => /Partial heal for|re-scan(?!.*OD)/.test(w)) ||
+    output.warnings.some((w) =>
+      /Partial heal for|re-scan(?!.*OD)|No fridge-stock chem covers/.test(w),
+    ) ||
     (output.solved &&
       output.ingredients.length === 0 &&
       output.physical.length === 0 &&
