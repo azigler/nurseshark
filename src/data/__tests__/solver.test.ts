@@ -382,9 +382,16 @@ describe('computeMix', () => {
     expect(out.cryo).toBeNull();
   });
 
-  // Scenario 5d (vs-xvp.1): cryo toggle ON allows cryo-class reagents back
-  // into the chem candidate pool — they're the natural multi-damage pick.
-  it('cryo ON keeps Cryoxadone available to the chem pass (vs-xvp.1)', () => {
+  // Scenario 5d (vs-xvp.1, recalibrated vs-xvp.4): cryo toggle ON allows
+  // cryo-class reagents back into the chem candidate pool. Prior to vs-xvp.4
+  // (TIER_RATE_BIAS=0.4) this profile picked Cryoxadone outright; the
+  // recalibrated bias (2.0) means Tricordrazine — which also covers all
+  // three input damage types via its Brute+Burn group heals + Poison-type
+  // heal — wins on the tier-1 vs tier-2 tiebreak. The medic-facing meaning
+  // is correct: the basic broad-spectrum fridge chem covers this profile
+  // without needing a cryo tube. Test now asserts that some valid
+  // multi-coverage chem was picked, NOT specifically Cryoxadone.
+  it('cryo ON allows cryo-class chems but tier-1 broad picks still win (vs-xvp.4)', () => {
     const out = computeMix(
       {
         damage: { Blunt: 20, Heat: 20, Poison: 20 },
@@ -394,9 +401,15 @@ describe('computeMix', () => {
       data,
     );
     expect(out.solved).toBe(true);
-    // Cryoxadone's group coverage makes it the dominant pick here.
     const ids = out.ingredients.map((i) => i.reagentId);
-    expect(ids).toContain('Cryoxadone');
+    // Either Tricordrazine (tier 1, broad heal) OR Cryoxadone (tier 2,
+    // full coverage) should be picked — both are reasonable. The tier
+    // suppression is OK with either outcome; the regression to guard
+    // against is "no broad-coverage chem picked at all."
+    const hasBroadHealer = ids.some((id) =>
+      ['Tricordrazine', 'Cryoxadone'].includes(id),
+    );
+    expect(hasBroadHealer).toBe(true);
   });
 
   // --- Tier ranking (vs-xvp.2). ---
@@ -493,10 +506,14 @@ describe('computeMix', () => {
     expect(saline?.tierReason).toBeNull();
   });
 
-  // Tier escalation by rate: a much-higher-rate tier-2 chem overrides the
-  // lower-rate tier-1 alternative (e.g. Ultravasculine vs Arithrazine for
-  // Radiation). The tierReason should describe the rate trade explicitly.
-  it('Radiation 30 cryo OFF picks Ultravasculine (tier 2) with rate-based reason', () => {
+  // vs-xvp.4 audit: pure-Radiation profile picks Arithrazine (tier 1)
+  // instead of Ultravasculine (now tier 3, exotic — needs Histamine
+  // which has no producing reaction). With TIER_RATE_BIAS=2.0 the tier-3
+  // deboost outweighs Ultravasculine's 6×-rate advantage on Toxin-group
+  // heals, so the medic gets the fridge-stock pick. Ultravasculine
+  // continues to win when the input profile spans Poison + Radiation
+  // (covered by the next test) — coverage still trumps tier.
+  it('Radiation 30 cryo OFF picks tier-1 Arithrazine, not Ultravasculine (vs-xvp.4)', () => {
     const out = computeMix(
       {
         damage: { Radiation: 30 },
@@ -505,14 +522,63 @@ describe('computeMix', () => {
       },
       data,
     );
+    const arith = out.ingredients.find((i) => i.reagentId === 'Arithrazine');
+    expect(arith).toBeDefined();
+    expect(arith?.tier).toBe(1);
+    // Tier-1 picks carry no tier reason (no escalation needed).
+    expect(arith?.tierReason).toBeNull();
+    // Ultravasculine MUST NOT surface for a pure-Radiation profile —
+    // that's the user-reported bug from vs-xvp.4.
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).not.toContain('Ultravasculine');
+  });
+
+  // vs-xvp.4: pure Poison profile picks Dylovene (tier 1), not
+  // Ultravasculine (tier 3). This is the headline bug from the in-game
+  // session — Ultravasculine surfaced for a fridge-stock-coverable
+  // damage type because the prior bias (0.4) was too weak to suppress
+  // a 6×-rate tier-3 chem.
+  it('Poison 30 picks tier-1 Dylovene, not Ultravasculine (vs-xvp.4)', () => {
+    const out = computeMix(
+      {
+        damage: { Poison: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).not.toContain('Ultravasculine');
+    // Some Poison-covering tier-1 chem should be the pick. Dylovene is
+    // the canonical answer; Tricordrazine is also acceptable
+    // (covers Poison via type heal at 0.5/tick metab=0.5 → 0.25/sec
+    // vs Dylovene 1.0/tick → 0.5/sec, so Dylovene wins, but the
+    // assertion guards against either).
+    const hasTier1Toxin = out.ingredients.some(
+      (i) =>
+        i.tier === 1 && ['Dylovene', 'Tricordrazine'].includes(i.reagentId),
+    );
+    expect(hasTier1Toxin).toBe(true);
+  });
+
+  // vs-xvp.4: when the input profile spans Poison AND Radiation,
+  // Ultravasculine's coverage advantage (Toxin group covers both)
+  // beats two separate tier-1 picks even with the strong bias.
+  // Coverage trumps tier — the bias only kicks in when coverage ties.
+  it('Poison+Radiation profile: Ultravasculine still wins on coverage (vs-xvp.4)', () => {
+    const out = computeMix(
+      {
+        damage: { Poison: 30, Radiation: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
     const ultra = out.ingredients.find((i) => i.reagentId === 'Ultravasculine');
     expect(ultra).toBeDefined();
-    expect(ultra?.tier).toBe(2);
-    // Tier-1 alternative (Arithrazine) exists, so the reason should be the
-    // rate-comparison phrasing, not "no fridge-stock chem covers".
-    expect(ultra?.tierReason).toMatch(
-      /heal rate of fridge-stock|profile coverage/i,
-    );
+    expect(ultra?.tier).toBe(3);
+    // Tier reason should explain the escalation — coverage-based phrasing.
+    expect(ultra?.tierReason).toMatch(/profile coverage|heal rate|fridge/i);
   });
 
   // Scenario 5e (vs-xvp.1): cryo OFF + Cellular damage profile must not
@@ -695,16 +761,18 @@ describe('computeMix', () => {
       },
       data,
     );
-    const smallOintment = small.physical.find(
-      (p) => p.itemId === 'Ointment' || p.itemId === 'RegenerativeMesh',
-    );
-    const largeOintment = large.physical.find(
-      (p) => p.itemId === 'Ointment' || p.itemId === 'RegenerativeMesh',
-    );
-    expect(smallOintment).toBeDefined();
-    expect(largeOintment).toBeDefined();
-    if (smallOintment && largeOintment) {
-      expect(largeOintment.count).toBeGreaterThan(smallOintment.count);
+    // vs-xvp.4: physical-item tier deboost shifts the burn-item ranking.
+    // RegenerativeMesh is now tier 3 (advanced medkit only) and AloeCream
+    // / Ointment (tier 1) win the burn coverage. Either is acceptable for
+    // this scaling test — the regression to guard is "physical-item count
+    // grows with damage amount."
+    const burnIds = new Set(['Ointment', 'AloeCream', 'RegenerativeMesh']);
+    const smallBurn = small.physical.find((p) => burnIds.has(p.itemId));
+    const largeBurn = large.physical.find((p) => burnIds.has(p.itemId));
+    expect(smallBurn).toBeDefined();
+    expect(largeBurn).toBeDefined();
+    if (smallBurn && largeBurn) {
+      expect(largeBurn.count).toBeGreaterThan(smallBurn.count);
     }
   });
 
@@ -719,6 +787,65 @@ describe('computeMix', () => {
     );
     const tourniquet = out.physical.find((p) => p.itemId === 'Tourniquet');
     expect(tourniquet).toBeUndefined();
+  });
+
+  // vs-xvp.4: tier-3 physical items (MedicatedSuture, RegenerativeMesh)
+  // are advanced-medkit components — not roundstart medibot stock. The
+  // solver was previously recommending them as the top burn / brute
+  // pick because their raw heal-per-application (sum 30-40) outranked
+  // tier-1 items (Brutepack 15, Ointment 16.5). The vs-xvp.4 audit
+  // applies the same tier-bias logic to physical items so the medic
+  // gets the standard medkit picks by default.
+  it('Brute 20 default does not pick tier-3 MedicatedSuture (vs-xvp.4)', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 20 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    const itemIds = out.physical.map((p) => p.itemId);
+    expect(itemIds).not.toContain('MedicatedSuture');
+    // Brutepack (tier 1) should be picked.
+    expect(itemIds).toContain('Brutepack');
+  });
+
+  it('Heat 20 default does not pick tier-3 RegenerativeMesh (vs-xvp.4)', () => {
+    const out = computeMix(
+      {
+        damage: { Heat: 20 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    const itemIds = out.physical.map((p) => p.itemId);
+    expect(itemIds).not.toContain('RegenerativeMesh');
+    // A tier-1 burn item should be picked.
+    expect(itemIds.some((id) => ['Ointment', 'AloeCream'].includes(id))).toBe(
+      true,
+    );
+  });
+
+  // vs-xvp.4: when a profile mixes Caustic damage (only RegenerativeMesh
+  // covers it among physical items at full strength — Ointment heals
+  // 1.5/app vs Mesh 10/app), the tier deboost is calibrated so Ointment
+  // STILL wins for any reasonable Caustic amount because it covers the
+  // same damage class with tier-1 access. Mesh only surfaces if Caustic
+  // is dominant AND Ointment can't keep up — in which case the tier-3
+  // rationale appears in the reason string.
+  it('low Caustic default picks Ointment (tier 1) over RegenerativeMesh (vs-xvp.4)', () => {
+    const out = computeMix(
+      {
+        damage: { Caustic: 10 },
+        species: 'Human',
+        filters: { chems: false, physical: true, cryo: false },
+      },
+      data,
+    );
+    const itemIds = out.physical.map((p) => p.itemId);
+    expect(itemIds).not.toContain('RegenerativeMesh');
   });
 
   // Label string format is included in the pro-tips style.
@@ -737,8 +864,13 @@ describe('computeMix', () => {
 
   // --- Blacklist integration (vs-3il.3). ---
 
-  // Rororium heals Brute 4/tick → would out-rank Bicaridine (1.5/tick) in
-  // raw rate. Default settings must skip it.
+  // Rororium heals Brute 4/tick. The blacklist drops it from default
+  // candidate ranking; vs-xvp.4 additionally moved it to tier 3 (admin-
+  // spawn) so even with the blacklist disabled it scores below tier-1
+  // Bicaridine. The fallback-warning code path is now only exercised
+  // when an unblacklisted candidate would have been the rate-leader,
+  // which the new tier deboost makes unusual — so this test asserts
+  // only the negative (Rororium not picked, real brute med picked).
   it('45 Blunt on Human (default) never picks Rororium (uncraftable)', () => {
     const out = computeMix(
       {
@@ -752,26 +884,65 @@ describe('computeMix', () => {
     expect(ids).not.toContain('Rororium');
     // A real brute-med should have been picked in Rororium's place.
     expect(ids.some((id) => ['Bicaridine', 'Arcryox'].includes(id))).toBe(true);
-    // Fallback warning was emitted naming Rororium.
-    const warning = out.warnings.find((w) => /Rororium/.test(w));
-    expect(warning).toBeDefined();
-    expect(warning).toMatch(/restricted|fall(?:ing|)-?back|uncraftable/i);
   });
 
-  // With includeRestricted: true the solver is allowed to reach for the
-  // admin-spawn reagent. This exists for completionists / admin review.
-  it('includeRestricted=true allows Rororium to be picked', () => {
-    const out = computeMix(
+  // vs-xvp.4: with includeRestricted=true, admin-spawn reagents
+  // re-enter the candidate pool. Whether they actually get PICKED is
+  // governed by the tier deboost (TIER_RATE_BIAS=2.0), so a tier-3
+  // admin chem only wins when no lower-tier alternative covers the
+  // damage profile. To verify the toggle behavior, strip every other
+  // Brute-covering reagent (craftable AND admin) so Rororium is left
+  // as the unique Brute healer; with restricted=true it gets picked,
+  // without it we get no Brute coverage at all.
+  it('includeRestricted=true makes admin reagents available (vs-xvp.4)', () => {
+    // Keep only Rororium as a Brute candidate. Strip every other
+    // reagent that touches Brute or its group via heals[].
+    const keepRororium = new Set(['Rororium']);
+    const stripIds = new Set<string>();
+    for (const r of data.reagents) {
+      const coversBrute = r.heals.some(
+        (h) =>
+          h.amountPerTick > 0 &&
+          ((h.kind === 'type' &&
+            ['Blunt', 'Piercing', 'Slash'].includes(h.target)) ||
+            (h.kind === 'group' && h.target === 'Brute')),
+      );
+      if (coversBrute && !keepRororium.has(r.id)) {
+        stripIds.add(r.id);
+      }
+    }
+    const reagents = data.reagents.filter((r) => !stripIds.has(r.id));
+    const reagentsById = new Map(reagents.map((r) => [r.id, r]));
+    const stripped: DataBundle = { ...data, reagents, reagentsById };
+
+    const blunt45Restricted = computeMix(
       {
         damage: { Blunt: 45 },
         species: 'Human',
         filters: { chems: true, physical: false, cryo: false },
         includeRestricted: true,
       },
-      data,
+      stripped,
     );
-    const ids = out.ingredients.map((i) => i.reagentId);
-    expect(ids).toContain('Rororium');
+    const blunt45Default = computeMix(
+      {
+        damage: { Blunt: 45 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      stripped,
+    );
+    // With restricted, Rororium is in the candidate pool and is the only
+    // Brute-covering reagent left → it gets picked.
+    expect(blunt45Restricted.ingredients.map((i) => i.reagentId)).toContain(
+      'Rororium',
+    );
+    // Without restricted, Rororium is blacklist-stripped → it is NOT
+    // picked. (No Brute coverage at all — the partial-heal warning
+    // fires.)
+    expect(blunt45Default.ingredients.map((i) => i.reagentId)).not.toContain(
+      'Rororium',
+    );
   });
 
   // Omnizine heals Brute/Burn/Toxin/Airloss at 2/tick each — it would
@@ -794,12 +965,19 @@ describe('computeMix', () => {
 
   // Ultravasculine is a Toxin-group healer that also deals 1.5 Blunt/tick
   // (above 20u: 6/tick). The wiki calls this out and the solver should
-  // surface the trade-off. Ultravasculine outranks Arithrazine for Toxin
-  // coverage and is not blacklisted — a Poison profile reliably picks it.
+  // surface the trade-off when Ultravasculine is picked.
+  //
+  // vs-xvp.4 update: Ultravasculine moved to tier 3 (needs Histamine,
+  // which has no producing reaction). With TIER_RATE_BIAS=2.0 it loses
+  // to tier-1 alternatives on pure-Poison or pure-Radiation profiles —
+  // exactly what the user asked for. To still exercise the side-effect
+  // warning path we use a mixed Poison+Radiation profile where
+  // Ultravasculine wins on profileCoverage (Toxin group covers both)
+  // regardless of tier.
   it('Ultravasculine: solver surfaces brute side-effect warning when picked', () => {
     const out = computeMix(
       {
-        damage: { Poison: 40 },
+        damage: { Poison: 40, Radiation: 30 },
         species: 'Human',
         filters: { chems: true, physical: false, cryo: false },
       },

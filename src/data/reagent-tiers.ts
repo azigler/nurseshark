@@ -1,20 +1,61 @@
-// Hand-curated availability tiers for medicinal reagents (vs-xvp.2).
+// Hand-curated availability tiers for medicinal reagents (vs-xvp.2,
+// re-audited vs-xvp.4).
 //
 // The Nurseshark solver originally minimized total unit count, which
 // surfaced exotic / hard-to-source chems over the basic medical-fridge
 // stock the medic actually carries. The tier system encodes the practical
-// "what's in arm's reach right now" knowledge:
+// "what's in arm's reach right now" knowledge so the solver biases its
+// recommendation toward fridge stock when fridge stock can do the job.
 //
-//   - Tier 1 / "fridge stock": cheap, broad-spread, made from raw chem-
-//     dispenser elements in one or two reactions. The medic has these
-//     pre-made at round start (medibot loadouts, fridge bottles, hypopens).
-//   - Tier 2 / "specialized": per-damage-type chems requiring the
-//     ChemMaster, hot-plate temperature gates, multi-step recipes, or
-//     uncommon precursors. The medic stocks these in smaller quantities
-//     and may need a synth run to top up.
-//   - Tier 3 / "exotic": rare, multi-system synthesis (botany-derived
-//     precursors, salvage drops, syndicate kits, very-deep cryo chains).
-//     Recommended only when tier-1 / tier-2 cannot cover the damage.
+// =====================================================================
+//  vs-xvp.4 framework — apply to EVERY reagent, conservative bias when
+//  in doubt (prefer the higher tier so the solver doesn't accidentally
+//  route the medic toward an exotic chem when a basic one would do):
+// =====================================================================
+//
+//   Tier 1 — medical-fridge pre-stock OR trivial chem-dispenser recipe.
+//     The medic has these pre-made at round start (medibot loadouts,
+//     fridge bottles, hypopens). Recipe is one of:
+//       * 2 chem-dispenser elements (Bicaridine = Inaprovaline + Carbon),
+//       * 3 chem-dispenser elements with no temperature gate,
+//       * 1 tier-1 precursor + 1 element (Arithrazine = Hyronalin + H).
+//     Examples: Bicaridine, Dermaline, Tricordrazine, Saline, Dylovene,
+//     Inaprovaline, Kelotane, Hyronalin, Dexalin, Mannitol, Synaptizine,
+//     Arithrazine.
+//
+//   Tier 2 — chem-dispenser recipe with 3+ inputs, OR requires a tier-1
+//     precursor + 1 reaction step (often hot-plate temperature gate),
+//     OR uses a chemmaster-only intermediate (Acetone, Phenol, Hydroxide,
+//     UnstableMutagen) that's still entirely chem-lab reachable. Picks
+//     here mean a synth run, but the medic finishes in one ChemMaster
+//     session without leaving Medbay.
+//     Examples: Bruizine, Lacerinol, Puncturase, Leporazine, Insuzine,
+//     Pyrazine, Sigynate, Diphenhydramine, Cryoxadone, Doxarubixadone,
+//     Phalanximine, Oculine, Haloperidol, TranexamicAcid, Epinephrine,
+//     Psicodine, Charcoal.
+//
+//   Tier 3 — multi-step crafting, rare/admin/end-of-round-only, requires
+//     sourcing from non-medical departments (botany, salvage, xenoarch),
+//     or assembly from crafted components. Anything that requires a
+//     reagent with NO producing reaction (Histamine, CarpoToxin, Aloe,
+//     Stellibinin, ZombieBlood) is automatically tier 3 because the
+//     medic must source the leaf reagent from a different game system.
+//     Examples: Ultravasculine (needs Histamine — no producer; sourced
+//     from poisoning side-effects), Aloxadone (needs botany Aloe),
+//     Cognizine (needs CarpoToxin from carp + Siderlac chain),
+//     Siderlac (needs botany Aloe + Stellibinin), Arcryox, Opporozidone
+//     (deep-cryo chain), all admin/uncraftable tags.
+//
+// =====================================================================
+//  vs-xvp.4 audit log (2026-04-25): Ultravasculine, Aloxadone, Cognizine,
+//  Siderlac moved from tier 2 → tier 3. The previous pass was hand-
+//  curated against the hoshizora-sayo guide section structure but didn't
+//  consistently apply the "no producing reaction for a leaf input"
+//  framework rule above; in-game testing surfaced Ultravasculine being
+//  recommended for Poison profiles, which is exactly the bug. The
+//  tier-3 deboost (TIER_RATE_BIAS) was simultaneously bumped from 0.4
+//  to 2.0 so the suppression actually bites — see solver.ts.
+// =====================================================================
 //
 // Sources cross-checked:
 //   - https://hoshizora-sayo.github.io/bugmedical/chems.html
@@ -29,8 +70,8 @@
 // effect on solver scoring is a small deboost — enough to favor a tier-1
 // reagent that covers the same damage class, but not enough to override a
 // strict damage-type match (e.g. Arithrazine remains the pick for
-// Radiation even though no tier-1 covers it; Doxarubixadone stays the
-// Cellular pick when cryo is on; the user-facing "why" reason explains).
+// Radiation; Doxarubixadone stays the Cellular pick when cryo is on; the
+// user-facing "why" reason explains).
 
 export type ReagentTier = 1 | 2 | 3;
 
@@ -50,9 +91,14 @@ export const DEFAULT_TIER: ReagentTier = 2;
  * reaction definitions. Conservative bias: when in doubt, prefer the higher
  * tier (lower-priority pick) so the solver doesn't accidentally route the
  * medic toward an exotic chem when a basic one would do.
+ *
+ * Entries are grouped by tier with one-line justifications. Tier-3 entries
+ * additionally call out the specific reason an exotic-only input is needed
+ * ("requires Histamine — no producing reaction") so the next auditor can
+ * spot-check without re-deriving from the reactions data.
  */
 export const REAGENT_TIERS: readonly TierEntry[] = [
-  // --- Tier 1: roundstart dispenser ---
+  // --- Tier 1: roundstart dispenser / medical fridge pre-stock ---
   {
     id: 'Inaprovaline',
     tier: 1,
@@ -150,7 +196,7 @@ export const REAGENT_TIERS: readonly TierEntry[] = [
     rationale: 'Anti-drunk — oxygen + Dylovene + carbon.',
   },
 
-  // --- Tier 2: ChemMaster / temperature gates / multi-step ---
+  // --- Tier 2: ChemMaster / temperature gates / multi-step (chem-lab reachable) ---
   {
     id: 'Bruizine',
     tier: 2,
@@ -169,12 +215,14 @@ export const REAGENT_TIERS: readonly TierEntry[] = [
   {
     id: 'Leporazine',
     tier: 2,
-    rationale: 'Cold/temp control — copper + fersilicate, plasma catalyst.',
+    rationale:
+      'Cold/temp control — copper + fersilicite (1-step from elements), plasma catalyst.',
   },
   {
     id: 'Insuzine',
     tier: 2,
-    rationale: 'Shock specialist — temp 433K, Leporazine + Kelotane + silicon.',
+    rationale:
+      'Shock specialist — temp 433K, Leporazine + Kelotane + silicon (1 chained step).',
   },
   {
     id: 'Pyrazine',
@@ -189,27 +237,26 @@ export const REAGENT_TIERS: readonly TierEntry[] = [
   {
     id: 'Diphenhydramine',
     tier: 2,
-    rationale: 'Histamine/poison reducer — temp 377K, oil-derived precursors.',
+    rationale:
+      'Histamine/poison reducer — temp 377K, Diethylamine + Oil + ethanol (chemmaster).',
   },
   {
     id: 'Cryoxadone',
     tier: 2,
-    rationale: 'Cryo-tube broad healer — Dexalin + water + oxygen.',
-  },
-  {
-    id: 'Aloxadone',
-    tier: 2,
-    rationale: 'Cryo burn — needs botany Aloe + Leporazine + Cryoxadone.',
+    rationale:
+      'Cryo-tube broad healer — Dexalin + water + oxygen (3-input, requires cryo tube to apply).',
   },
   {
     id: 'Doxarubixadone',
     tier: 2,
-    rationale: 'Cryo cellular — Cryoxadone + unstable mutagen.',
+    rationale:
+      'Cryo cellular — Cryoxadone + UnstableMutagen (chained chemmaster step).',
   },
   {
     id: 'Phalanximine',
     tier: 2,
-    rationale: 'Cellular damage — Hyronalin + ethanol + mutagen, nerfed pick.',
+    rationale:
+      'Cellular damage — Hyronalin + ethanol + UnstableMutagen, all chem-lab reachable.',
   },
   {
     id: 'Oculine',
@@ -227,49 +274,76 @@ export const REAGENT_TIERS: readonly TierEntry[] = [
     rationale: 'Bleed-stop — Inaprovaline + sulfuric + sugar.',
   },
   {
-    id: 'Ultravasculine',
-    tier: 2,
-    rationale: 'Toxin/poison — needs Histamine (injury-derived) + plasma.',
-  },
-  {
     id: 'Epinephrine',
     tier: 2,
-    rationale: 'Crit-stabilizer — phenol + acetone + chlorine + hydroxide.',
+    rationale:
+      'Crit-stabilizer — Phenol + Acetone + chlorine + hydroxide (4-step chem-lab build).',
   },
   {
     id: 'Psicodine',
     tier: 2,
-    rationale: 'Anti-panic — Mannitol + Impedrezene + water.',
+    rationale:
+      'Anti-panic — Mannitol + Impedrezene + water (Impedrezene is chem-dispenser reachable).',
+  },
+  {
+    id: 'Charcoal',
+    tier: 2,
+    rationale:
+      'Antidote — heals 1 Poison/tick; ranks below Dylovene & friends.',
+  },
+
+  // --- Tier 3: exotic / botany / salvage / multi-system / admin-only ---
+  // vs-xvp.4: each entry below MUST have an inline rationale calling out the
+  // specific exotic-only input (no producing reaction in standard data, or
+  // requires sourcing from a non-chem-lab game system).
+  {
+    id: 'Ultravasculine',
+    tier: 3,
+    // tier 3: requires Histamine — no producing reaction in standard data.
+    // Histamine is generated as a poisoning side-effect of other reagents
+    // (Mold, Theobromine, etc), so a chemist must intentionally poison the
+    // patient or themselves to harvest it. Not fridge-reachable.
+    rationale:
+      'Exotic — needs Histamine, which has no producing reaction (sourced from poisoning side-effects, not chem-lab synthesis).',
+  },
+  {
+    id: 'Aloxadone',
+    tier: 3,
+    // tier 3: requires Aloe, which is a botany-grown plant with no reaction.
+    rationale:
+      'Exotic — Cryoxadone + Leporazine + Aloe (Aloe has no producing reaction; must be grown by botany).',
   },
   {
     id: 'Cognizine',
-    tier: 2,
+    tier: 3,
+    // tier 3: requires CarpoToxin (space carp salvage) + Siderlac (botany).
     rationale:
-      'Sentience reagent — needs salvage carpotoxin + botany Siderlac.',
+      'Exotic — needs CarpoToxin (space-carp salvage) + Siderlac (botany Aloe + Stellibinin chain). Multi-system.',
   },
   {
     id: 'Siderlac',
-    tier: 2,
-    rationale: 'Botany precursor — Aloe + Stellibinin (galaxy thistle).',
+    tier: 3,
+    // tier 3: requires Aloe AND Stellibinin, both botany leafs with no recipe.
+    rationale:
+      'Exotic — botany-only chain (Aloe + Stellibinin). Stellibinin is itself blacklist-flagged as botany-only.',
   },
-
-  // --- Tier 3: exotic / botany-heavy / multi-system ---
   {
     id: 'Opporozidone',
     tier: 3,
     rationale:
-      'Deep cryo — temp 400K, requires Cognizine + Doxarubixadone chain.',
+      'Deep cryo — temp 400K, requires Cognizine + Doxarubixadone chain (Cognizine itself is tier 3).',
   },
   {
     id: 'Arcryox',
     tier: 3,
     rationale:
-      'Exotic broad healer — temp 370K, Tricord + Cryoxadone + lithium.',
+      'Exotic broad healer — temp 370K, Tricord + Cryoxadone + lithium (uses tier-2 cryo chem).',
   },
   {
     id: 'Ambuzol',
     tier: 3,
-    rationale: 'Anti-zombie — Dylovene + ammonia + zombie blood (rare).',
+    rationale:
+      'Anti-zombie — Dylovene + ammonia + ZombieBlood (no producing reaction; rare outbreak only).',
   },
   {
     id: 'AmbuzolPlus',
@@ -284,7 +358,7 @@ export const REAGENT_TIERS: readonly TierEntry[] = [
   {
     id: 'Ethyloxyephedrine',
     tier: 3,
-    rationale: 'Exotic — Desoxyephedrine (meth) + Stellibinin.',
+    rationale: 'Exotic — Desoxyephedrine (meth) + Stellibinin (botany leaf).',
   },
   {
     id: 'Barozine',
@@ -333,12 +407,6 @@ export const REAGENT_TIERS: readonly TierEntry[] = [
     rationale:
       'Narcotic — heals only fire in critical state and the reagent inflicts 3 Poison/tick. Adversarial chem; not a medic-pick.',
   },
-  {
-    id: 'Charcoal',
-    tier: 2,
-    rationale:
-      'Antidote — heals 1 Poison/tick; ranks below Dylovene & friends.',
-  },
 ];
 
 const TIER_BY_ID: ReadonlyMap<string, TierEntry> = new Map(
@@ -356,4 +424,68 @@ export function tierFor(reagentId: string): ReagentTier {
 
 export function tierEntry(reagentId: string): TierEntry | null {
   return TIER_BY_ID.get(reagentId) ?? null;
+}
+
+// =====================================================================
+//  Physical-item tiers (vs-xvp.4)
+// =====================================================================
+//
+// Same framework as reagents, applied to medkit-style items:
+//
+//   Tier 1 — pre-stocked in any medkit / medibot loadout. Bandages,
+//     gauze, ointment, brutepack, bloodpack, AloeCream — all standard
+//     issue.
+//   Tier 2 — found in advanced/specialized medkits but not always in
+//     the round-start medbay drawer. (No items currently in this tier.)
+//   Tier 3 — crafted from components (medicated suture = bandages +
+//     Bicaridine; regenerative mesh = ointment + advanced burn
+//     materials). Effectively unavailable until a chemist or surgeon
+//     gathers components, OR end-of-round when an advanced medkit is
+//     opened. The medic should NOT default to recommending these.
+//
+// Items not in the table default to `DEFAULT_PHYSICAL_ITEM_TIER` (1) —
+// most stock items are roundstart-available; the exotics are the
+// short hand-curated list below.
+
+export type PhysicalItemTier = 1 | 2 | 3;
+
+export const DEFAULT_PHYSICAL_ITEM_TIER: PhysicalItemTier = 1;
+
+interface PhysicalItemTierEntry {
+  readonly id: string;
+  readonly tier: PhysicalItemTier;
+  readonly rationale: string;
+}
+
+const PHYSICAL_ITEM_TIERS: readonly PhysicalItemTierEntry[] = [
+  {
+    id: 'MedicatedSuture',
+    tier: 3,
+    // tier 3: crafted from Bicaridine + bandages + advanced kit components.
+    // Not roundstart fridge / medibot stock — only appears in end-of-round
+    // advanced medkits or when a chemist explicitly assembles the item.
+    rationale:
+      'Crafted from advanced medkit components; not roundstart medibot stock. Use Brutepack instead unless the medic explicitly has one on hand.',
+  },
+  {
+    id: 'RegenerativeMesh',
+    tier: 3,
+    // tier 3: same as above — advanced medkit only.
+    rationale:
+      'Crafted from advanced medkit components; not roundstart medibot stock. Use Ointment / AloeCream instead unless the medic explicitly has one on hand.',
+  },
+];
+
+const PHYSICAL_TIER_BY_ID: ReadonlyMap<string, PhysicalItemTierEntry> = new Map(
+  PHYSICAL_ITEM_TIERS.map((t) => [t.id, t]),
+);
+
+export function physicalItemTierFor(itemId: string): PhysicalItemTier {
+  return PHYSICAL_TIER_BY_ID.get(itemId)?.tier ?? DEFAULT_PHYSICAL_ITEM_TIER;
+}
+
+export function physicalItemTierEntry(
+  itemId: string,
+): PhysicalItemTierEntry | null {
+  return PHYSICAL_TIER_BY_ID.get(itemId) ?? null;
 }

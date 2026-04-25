@@ -54,7 +54,13 @@ import type {
 } from '../types';
 import { prettifyId, resolveFluentKey } from './fluent';
 import { blacklistEntry, isBlacklisted } from './reagent-blacklist';
-import { type ReagentTier, tierEntry, tierFor } from './reagent-tiers';
+import {
+  physicalItemTierEntry,
+  physicalItemTierFor,
+  type ReagentTier,
+  tierEntry,
+  tierFor,
+} from './reagent-tiers';
 import {
   CONDITIONAL_HEAL_WARNINGS,
   OD_PROXIMITY_WARNINGS,
@@ -326,17 +332,53 @@ interface Candidate {
 }
 
 /**
- * Tier-preference weight (vs-xvp.2). Used as a sort tiebreaker after the
- * profile-coverage and rate ranks. Tuned so a tier-1 reagent beats a tier-2
- * with the same coverage AND a slightly higher rate (the medic prefers
- * "what I already have" over "5% better but needs a synth run"). When
- * coverage diverges, coverage still wins — the solver won't recommend a
- * tier-1 chem that misses a damage type just to keep the tier low.
+ * Tier-preference weight (vs-xvp.2, recalibrated vs-xvp.4). Used as an
+ * additive deboost on the heal-rate score: a tier-N reagent's effective
+ * score is `ratePerUnitPerSec − (tier − 1) × TIER_RATE_BIAS`. When
+ * coverage ties (the strict first sort key), the lower-tier reagent
+ * usually wins unless the higher-tier alternative is dramatically faster.
  *
- * Kept module-local for now; can be promoted to a config knob if user-test
- * shows the medics want a different bias.
+ * Calibration history:
+ *   vs-xvp.2: 0.4 — "small deboost, still let a clearly-better
+ *             higher-tier reagent win." Empirically too weak: in-game
+ *             testing surfaced Ultravasculine (tier 3, 6/tick Toxin
+ *             group → 3.0/sec) being recommended for pure Poison
+ *             profiles over Dylovene (tier 1, 1/tick → 0.5/sec) because
+ *             3.0 − 0.4×2 = 2.2 still beat 0.5. The medic's complaint:
+ *             "exotic chem surfaced as suggestion despite Dylovene
+ *             being fridge-stocked." (vs-xvp.4 surface report.)
+ *   vs-xvp.4: 2.0 — strong enough to suppress tier-3 chems when a
+ *             tier-1 alternative covers the same damage type. With
+ *             bias 2.0:
+ *               * Ultravasculine score = 3.0 − 4.0 = −1.0
+ *               * Dylovene score = 0.5 − 0 = 0.5 → Dylovene wins ✓
+ *             Tier-2 picks still win when their rate is ~2.5× a
+ *             tier-1 alternative (which is the threshold where a synth
+ *             run is genuinely worth the medic's time). Cellular and
+ *             other no-tier-1-alternative damage types are unaffected
+ *             because there's no tier-1 to bias toward.
+ *
+ * The bias does NOT override the strict profile-coverage sort: if a
+ * tier-3 reagent covers two damage types in the input profile and a
+ * tier-1 reagent covers only one, the tier-3 reagent still wins. This
+ * is correct — the solver should escalate when escalation lets it pack
+ * coverage into fewer reagents.
  */
-const TIER_RATE_BIAS = 0.4;
+const TIER_RATE_BIAS = 2.0;
+
+/**
+ * Physical-item tier deboost (vs-xvp.4). Same calibration philosophy as
+ * `TIER_RATE_BIAS` but applied to the physical-item ranking sort, where
+ * the score is `sum(healsPerApplication) + syntheticBloodlossHeal`.
+ * MedicatedSuture (tier 3, sum=30) and RegenerativeMesh (tier 3, sum=40)
+ * would otherwise out-score Brutepack (tier 1, sum=15) and Ointment
+ * (tier 1, sum=16.5) — so a 20-per-tier deboost makes tier-3 items lose
+ * to tier-1 items when both cover the same damage class. The bias
+ * doesn't kick in unless a tier-1 alternative actually provides
+ * coverage; if no tier-1 item touches the damage type, the higher-tier
+ * item still wins because its score is the only positive number.
+ */
+const PHYSICAL_TIER_RATE_BIAS = 20;
 
 function damageTypeIsTreatable(t: string): t is DamageTypeId {
   return (TREATABLE_DAMAGE_TYPES as readonly string[]).includes(t);
@@ -832,16 +874,23 @@ function pickPhysicalItems(
   const out: SolverPhysicalEntry[] = [];
 
   // Score items by total per-application coverage (including synthetic
-  // Bloodloss heal from bloodlossModifier + modifyBloodLevel). Ties fall back
-  // to sum of raw healsPerApplication so Ointment still edges out Gauze on
-  // burns even though their Bloodloss synthetics tie.
+  // Bloodloss heal from bloodlossModifier + modifyBloodLevel), with a
+  // tier-based deboost (vs-xvp.4) so tier-3 items (MedicatedSuture,
+  // RegenerativeMesh) lose to tier-1 alternatives that cover the same
+  // damage class. Ties fall back to sum of raw healsPerApplication so
+  // Ointment still edges out Gauze on burns even though their Bloodloss
+  // synthetics tie.
   const sortedItems = [...data.physicalItems].sort((a, b) => {
-    const scoreA =
+    const rawA =
       Object.values(a.healsPerApplication).reduce((s, v) => s + v, 0) +
       syntheticBloodlossHeal(a);
-    const scoreB =
+    const rawB =
       Object.values(b.healsPerApplication).reduce((s, v) => s + v, 0) +
       syntheticBloodlossHeal(b);
+    const scoreA =
+      rawA - (physicalItemTierFor(a.id) - 1) * PHYSICAL_TIER_RATE_BIAS;
+    const scoreB =
+      rawB - (physicalItemTierFor(b.id) - 1) * PHYSICAL_TIER_RATE_BIAS;
     return scoreB - scoreA;
   });
 
@@ -901,10 +950,18 @@ function pickPhysicalItems(
         .filter(([, a]) => a > 0)
         .map(([t, a]) => `${Math.round(a * 10) / 10} ${t}`)
         .join(' + ');
+      // vs-xvp.4: when a tier-3 physical item still made the cut (because
+      // no tier-1 alternative covered the damage class, or because its
+      // raw heal score won despite the deboost), append the tier
+      // rationale so the medic understands why an advanced-medkit item
+      // is being recommended.
+      const tEntry = physicalItemTierEntry(item.id);
+      const tierNote =
+        tEntry && tEntry.tier === 3 ? ` Tier 3: ${tEntry.rationale}` : '';
       out.push({
         itemId: item.id,
         count,
-        reason: `${item.name} × ${count} — covers ${healedSummary}.`,
+        reason: `${item.name} × ${count} — covers ${healedSummary}.${tierNote}`,
       });
     }
   }
