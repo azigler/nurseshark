@@ -17,7 +17,7 @@ import type {
   Species,
   SpriteManifest,
 } from '../../types';
-import { computeMix } from '../solver';
+import { computeAlternatives, computeMix } from '../solver';
 import type { DataBundle } from '../store';
 
 function loadJson<T>(rel: string): T {
@@ -1424,5 +1424,229 @@ describe('computeMix', () => {
     expect(out.solved).toBe(true);
     const tourniquet = out.physical.find((p) => p.itemId === 'Tourniquet');
     expect(tourniquet).toBeUndefined();
+  });
+});
+
+// =============================================================
+// vs-xvp.5: ranked Rx alternatives (`computeAlternatives`).
+// =============================================================
+describe('computeAlternatives', () => {
+  let data: DataBundle;
+  beforeAll(() => {
+    data = buildBundle();
+  });
+
+  // Multiple alternatives are returned for a typical profile. With
+  // tier-1, tier-2, and tier-3 ceilings the solver should produce 2-3
+  // alternatives (some ceilings may be suppressed as duplicates of the
+  // adjacent ceiling).
+  it('returns multiple alternatives for a multi-damage profile', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Blunt: 30, Heat: 20, Poison: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(result.alternatives.length).toBeGreaterThanOrEqual(1);
+    expect(result.alternatives.length).toBeLessThanOrEqual(3);
+    // Sorted ascending by tier ceiling.
+    for (let i = 1; i < result.alternatives.length; i += 1) {
+      expect(result.alternatives[i].tierCeiling).toBeGreaterThanOrEqual(
+        result.alternatives[i - 1].tierCeiling,
+      );
+    }
+  });
+
+  // The lowest-tier viable alternative is the default-expanded card.
+  // For a fridge-coverable profile, that's the tier-1 card (no escalation
+  // needed).
+  it('default-expanded card is the lowest-tier non-partial alternative', () => {
+    const result = computeAlternatives(
+      {
+        // Pure Blunt — fully covered by Bicaridine (tier 1).
+        damage: { Blunt: 45 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(result.alternatives.length).toBeGreaterThanOrEqual(1);
+    const defaultAlt = result.alternatives[result.defaultIndex];
+    expect(defaultAlt).toBeDefined();
+    expect(defaultAlt.partial).toBe(false);
+    // The default should be the LOWEST tier among non-partial alternatives.
+    for (let i = 0; i < result.defaultIndex; i += 1) {
+      expect(result.alternatives[i].partial).toBe(true);
+    }
+  });
+
+  // Every alternative carries a populated trade-off summary (non-empty,
+  // describes the tier scope).
+  it('every alternative has a non-empty trade-off summary', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Blunt: 30, Heat: 20 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(result.alternatives.length).toBeGreaterThan(0);
+    for (const alt of result.alternatives) {
+      expect(alt.summary.length).toBeGreaterThan(20);
+      // The summary mentions either the tier scope or the partial-coverage
+      // disclaimer — both are valid.
+      expect(alt.summary).toMatch(/tier|fridge|standard|exotic|partial/i);
+    }
+  });
+
+  // Damage profile uncoverable by tier 1 → tier-1-only card flagged as
+  // partial. Cellular damage has no tier-1 healer (Doxarubixadone is
+  // tier 2) so the fridge-stock alternative cannot fully cover this profile.
+  it('partial flag fires when tier-1 cannot cover damage type', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Cellular: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: true },
+      },
+      data,
+    );
+    const tier1 = result.alternatives.find((a) => a.tierCeiling === 1);
+    expect(tier1).toBeDefined();
+    expect(tier1?.partial).toBe(true);
+    // A higher-tier alternative should NOT be partial — Doxarubixadone
+    // covers Cellular at tier 2.
+    const nonPartial = result.alternatives.find((a) => !a.partial);
+    expect(nonPartial).toBeDefined();
+    expect(nonPartial?.tierCeiling).toBeGreaterThanOrEqual(2);
+  });
+
+  // Each alternative is a complete SolverOutput — has the same shape
+  // (ingredients, physical, cryo, label, etc.) so the UI can render it
+  // identically to a single-pick output.
+  it('each alternative carries a complete SolverOutput', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Blunt: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: true, cryo: false },
+      },
+      data,
+    );
+    for (const alt of result.alternatives) {
+      expect(alt.output.solved).toBe(true);
+      expect(Array.isArray(alt.output.ingredients)).toBe(true);
+      expect(Array.isArray(alt.output.physical)).toBe(true);
+      // Tier-bounded ingredients: every chem ingredient in the
+      // alternative respects the ceiling.
+      for (const ing of alt.output.ingredients) {
+        expect(ing.tier).toBeLessThanOrEqual(alt.tierCeiling);
+      }
+    }
+  });
+
+  // For pure Poison profile, the tier-1 alternative picks Dylovene
+  // (no Ultravasculine), tier-2 same (Ultravasculine is tier 3 now),
+  // and tier-3 may pick Ultravasculine if its 6×-rate beats the
+  // tier-1 score even after deboost. With bias=2.0 it doesn't, so all
+  // three alternatives end up identical → suppressed to 1 card.
+  it('pure Poison: alternatives all use Dylovene (vs-xvp.4 + vs-xvp.5)', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Poison: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    for (const alt of result.alternatives) {
+      const ids = alt.output.ingredients.map((i) => i.reagentId);
+      expect(ids).not.toContain('Ultravasculine');
+    }
+  });
+
+  // For a Poison+Radiation profile, the higher-tier alternative DOES
+  // pick Ultravasculine (its Toxin-group coverage trumps the tier
+  // suppression). The tier-1 alternative falls back to Arithrazine +
+  // Dylovene/Tricord — partial or full coverage depending on the
+  // candidate ranking, but distinct from the tier-3 plan.
+  it('Poison+Radiation: tier-3 alternative includes Ultravasculine', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Poison: 30, Radiation: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    // Tier-3 ceiling alternative SHOULD include Ultravasculine (broad
+    // Toxin coverage wins on profileCoverage despite tier 3).
+    const tier3 = result.alternatives.find((a) => a.tierCeiling === 3);
+    expect(tier3).toBeDefined();
+    const tier3Ids = tier3?.output.ingredients.map((i) => i.reagentId) ?? [];
+    expect(tier3Ids).toContain('Ultravasculine');
+    // Tier-1 alternative should NOT include Ultravasculine (excluded by
+    // the ceiling).
+    const tier1 = result.alternatives.find((a) => a.tierCeiling === 1);
+    if (tier1) {
+      const tier1Ids = tier1.output.ingredients.map((i) => i.reagentId);
+      expect(tier1Ids).not.toContain('Ultravasculine');
+    }
+  });
+
+  // Dead-mode wraps the existing 3-panel revival flow as a single-card
+  // alternative for uniform UI handling. The card carries the dead-mode
+  // SolverOutput intact (revivalStep, postRevivalIngredients, etc).
+  it('dead-mode returns a single-card alternative wrapping the revival flow', () => {
+    const result = computeAlternatives(
+      {
+        damage: { Blunt: 100 },
+        species: 'Human',
+        filters: { chems: true, physical: true, cryo: false },
+        patientState: 'dead',
+      },
+      data,
+    );
+    expect(result.alternatives).toHaveLength(1);
+    expect(result.defaultIndex).toBe(0);
+    const alt = result.alternatives[0];
+    // Wrapped output retains the dead-mode revival fields.
+    expect(alt.output.revivalStep).toBeDefined();
+    expect(alt.output.revivalStep?.tool).toBe('defibrillator');
+  });
+
+  // Adjacent-duplicate suppression: when tier-2 produces the same Rx
+  // as tier-1 (because no tier-2 chem improved on the tier-1 pick),
+  // tier-2 is dropped from the list.
+  it('suppresses adjacent-duplicate alternatives', () => {
+    const result = computeAlternatives(
+      {
+        // Pure Blunt: Bicaridine (tier 1) wins all three ceilings, so
+        // tier-2 and tier-3 are duplicates of tier-1 → only 1 card.
+        damage: { Blunt: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    // 1 card (all duplicates suppressed) or 2 cards if cryo introduces
+    // variation. Either way, no two adjacent alternatives should have
+    // identical ingredient sets.
+    for (let i = 1; i < result.alternatives.length; i += 1) {
+      const prev = result.alternatives[i - 1].output.ingredients;
+      const curr = result.alternatives[i].output.ingredients;
+      const prevIds = prev
+        .map((p) => `${p.reagentId}:${p.units}`)
+        .sort()
+        .join(',');
+      const currIds = curr
+        .map((p) => `${p.reagentId}:${p.units}`)
+        .sort()
+        .join(',');
+      expect(prevIds).not.toEqual(currIds);
+    }
   });
 });

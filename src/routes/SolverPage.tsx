@@ -3,22 +3,29 @@
 // Cryo), and the solver produces a full-heal recipe with per-line
 // explanations.
 //
+// As of vs-xvp.5 the solver returns 2-4 ranked Rx alternatives instead of
+// a single "best" pick. The medic picks the card matching their actual
+// inventory (fridge-stock / standard medical chems / exotic-allowed).
+// Per-medicine recipes + Full Rx synthesis from vs-xvp.3 are retained
+// inside each card.
+//
 // Algorithm lives in src/data/solver.ts — this file is pure UI + wiring.
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CopyLabelButton } from '../components/CopyLabelButton';
 import { RecipePanels } from '../components/RecipePanels';
 import { prettifyId, resolveFluentKey } from '../data/fluent';
-import { computeMix } from '../data/solver';
+import { computeAlternatives } from '../data/solver';
 import { type DataBundle, useData } from '../data/store';
 import type {
   DamageProfile,
   DamageTypeId,
   PatientState,
+  SolverAlternative,
+  SolverAlternatives,
   SolverFilters,
   SolverIngredient,
   SolverInput,
-  SolverOutput,
 } from '../types';
 
 // Order matching the in-game health scanner readout.
@@ -58,6 +65,51 @@ const PATIENT_STATES: ReadonlyArray<{ id: PatientState; label: string }> = [
   { id: 'critical', label: 'Critical' },
   { id: 'dead', label: 'Dead' },
 ];
+
+/**
+ * localStorage key for the medic's last-chosen card index (vs-xvp.5).
+ * Stored as a tier-ceiling number (1/2/3) rather than an array index so
+ * the preference survives even when adjacent-duplicate suppression
+ * changes the visible card count.
+ */
+const PREFERRED_TIER_KEY = 'nurseshark.solver.preferredTier';
+
+function loadPreferredTier(): 1 | 2 | 3 | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(PREFERRED_TIER_KEY);
+    const n = raw === null ? null : Number.parseInt(raw, 10);
+    if (n === 1 || n === 2 || n === 3) return n;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function savePreferredTier(tier: 1 | 2 | 3): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(PREFERRED_TIER_KEY, String(tier));
+  } catch {
+    // localStorage may be disabled (Safari private mode etc) — silently
+    // skip persistence rather than crashing the solver.
+  }
+}
+
+/**
+ * Map a tier-ceiling preference back to an index in the alternatives
+ * list, falling back to the alternatives' own `defaultIndex` when the
+ * preferred tier isn't represented (suppressed by duplicate detection).
+ */
+function indexForPreferredTier(
+  alternatives: readonly SolverAlternative[],
+  preferred: 1 | 2 | 3 | null,
+  fallbackIndex: number,
+): number {
+  if (preferred === null) return fallbackIndex;
+  const idx = alternatives.findIndex((a) => a.tierCeiling === preferred);
+  return idx === -1 ? fallbackIndex : idx;
+}
 
 /**
  * Shared renderer for a single chem ingredient panel. Used both by the
@@ -116,6 +168,323 @@ function IngredientList({
   );
 }
 
+/**
+ * Render a single chem-mix Rx (alive / critical mode) — the body of an
+ * alternative card. The card chrome (header + collapsed/expanded toggle)
+ * is rendered by `RxCard`.
+ */
+function StandardRxBody({
+  alternative,
+  data,
+  operator,
+}: {
+  alternative: SolverAlternative;
+  data: DataBundle;
+  operator: string;
+}) {
+  const output = alternative.output;
+  return (
+    <div className="solver-plan">
+      {output.ingredients.length > 0 && (
+        <>
+          <h4>Chem mix</h4>
+          <IngredientList ingredients={output.ingredients} data={data} />
+        </>
+      )}
+
+      {output.physical.length > 0 && (
+        <>
+          <h4>Physical items</h4>
+          <ul className="solver-physical">
+            {output.physical.map((p) => {
+              const it = data.physicalItemsById.get(p.itemId);
+              return (
+                <li key={p.itemId}>
+                  <strong>
+                    {p.count}× {it?.name ?? p.itemId}
+                  </strong>
+                  <div className="solver-ingredient-reason">{p.reason}</div>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+
+      {output.cryo && (
+        <>
+          <h4>Cryo flow</h4>
+          <div className="solver-cryo">
+            <strong>
+              {output.cryo.units}u {output.cryo.reagentId} @{' '}
+              {output.cryo.targetTemp}K
+            </strong>
+            <div className="solver-ingredient-reason">{output.cryo.reason}</div>
+          </div>
+        </>
+      )}
+
+      {output.estimatedTimeSec !== null && (
+        <p className="solver-time muted">
+          Estimated time to full heal: ~{output.estimatedTimeSec}s
+        </p>
+      )}
+
+      {output.warnings.length > 0 && (
+        <div className="solver-warnings">
+          <h4>Warnings</h4>
+          <ul>
+            {output.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {output.label && (
+        <div className="solver-label-row">
+          <div className="solver-label-preview">
+            <code>{output.label}</code>
+          </div>
+          {output.ingredients[0] && (
+            <CopyLabelButton
+              reagentId={output.ingredients[0].reagentId}
+              units={output.ingredients[0].units}
+              operatorName={operator || undefined}
+              registerGlobalCopy
+            />
+          )}
+        </div>
+      )}
+
+      {output.ingredients.length > 0 && (
+        <RecipePanels ingredients={output.ingredients} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Render the dead-patient 3-panel revival flow inside a card. This is
+ * the same layout as the pre-vs-xvp.5 standalone dead-mode block —
+ * `computeAlternatives` wraps it as a single-card alternative for
+ * uniform handling.
+ */
+function DeadModeBody({
+  alternative,
+  data,
+  operator,
+}: {
+  alternative: SolverAlternative;
+  data: DataBundle;
+  operator: string;
+}) {
+  const output = alternative.output;
+  const canRevive = output.revivalStep !== undefined;
+  return (
+    <div className="solver-plan solver-plan-revival">
+      {output.patientStateWarnings &&
+        output.patientStateWarnings.length > 0 && (
+          <div className="solver-revival-advisories">
+            <ul>
+              {output.patientStateWarnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+      {/* Panel 1: Topicals. */}
+      <section className="solver-revival-panel solver-revival-topicals">
+        <h4>1. Topicals — reduce damage below 200</h4>
+        {output.physical.length > 0 ? (
+          <ul className="solver-physical">
+            {output.physical.map((p) => {
+              const it = data.physicalItemsById.get(p.itemId);
+              return (
+                <li key={p.itemId}>
+                  <strong>
+                    {p.count}× {it?.name ?? p.itemId}
+                  </strong>
+                  <div className="solver-ingredient-reason">{p.reason}</div>
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <p className="muted">
+            Patient already below 200 total damage — no topicals required before
+            defibrillation.
+          </p>
+        )}
+      </section>
+
+      {/* Panel 2: Defibrillator. Emitted only when revival is possible. */}
+      {canRevive && output.revivalStep && (
+        <section className="solver-revival-panel solver-revival-defib">
+          <h4>2. Defibrillate</h4>
+          <div className="solver-revival-step">
+            <strong>{output.revivalStep.tool}</strong>
+            <div className="solver-ingredient-reason">
+              Heals{' '}
+              {Object.entries(output.revivalStep.heals)
+                .map(([k, v]) => `${v} ${k}`)
+                .join(', ')}
+              ; inflicts{' '}
+              {Object.entries(output.revivalStep.inflicts)
+                .map(([k, v]) => `${v} ${k}`)
+                .join(', ')}
+              .
+            </div>
+            <div className="solver-ingredient-reason">
+              {output.revivalStep.note}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Panel 3: Post-revival chems. Emitted only when revival succeeded. */}
+      {canRevive &&
+        output.postRevivalIngredients &&
+        output.postRevivalIngredients.length > 0 && (
+          <section className="solver-revival-panel solver-revival-postchems">
+            <h4>3. Post-revival chems</h4>
+            <IngredientList
+              ingredients={output.postRevivalIngredients}
+              data={data}
+            />
+            <RecipePanels ingredients={output.postRevivalIngredients} />
+          </section>
+        )}
+
+      {!canRevive && (
+        <section className="solver-revival-panel solver-revival-blocked">
+          <h4>Revival blocked</h4>
+          <p>
+            Topicals alone cannot reduce total damage below the 200 threshold.
+            Consult CMO for advanced options (cryo, surgery, genetic
+            restoration).
+          </p>
+        </section>
+      )}
+
+      {output.estimatedTimeSec !== null && (
+        <p className="solver-time muted">
+          Estimated post-revival heal time: ~{output.estimatedTimeSec}s
+        </p>
+      )}
+
+      {output.warnings.length > 0 && (
+        <div className="solver-warnings">
+          <h4>Post-revival warnings</h4>
+          <ul>
+            {output.warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {output.label && canRevive && (
+        <div className="solver-label-row">
+          <div className="solver-label-preview">
+            <code>{output.label}</code>
+          </div>
+          {output.postRevivalIngredients?.[0] && (
+            <CopyLabelButton
+              reagentId={output.postRevivalIngredients[0].reagentId}
+              units={output.postRevivalIngredients[0].units}
+              operatorName={operator || undefined}
+              registerGlobalCopy
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Card chrome around a single Rx alternative. Renders an expandable
+ * header with the trade-off summary; the body shows the full Rx when
+ * expanded.
+ */
+function RxCard({
+  alternative,
+  data,
+  operator,
+  index,
+  expanded,
+  onToggle,
+  isDead,
+}: {
+  alternative: SolverAlternative;
+  data: DataBundle;
+  operator: string;
+  index: number;
+  expanded: boolean;
+  onToggle: (idx: number) => void;
+  isDead: boolean;
+}) {
+  const headLabel =
+    alternative.kind === 'fridge-stock'
+      ? 'Fridge stock'
+      : alternative.kind === 'standard'
+        ? 'Standard chems'
+        : 'Exotic-allowed';
+  const totalUnits = alternative.totalUnits;
+  const ingCount = alternative.output.ingredients.length;
+  return (
+    <section
+      className={`solver-rx-card tier-${alternative.tierCeiling}${
+        expanded ? ' is-expanded' : ' is-collapsed'
+      }${alternative.partial ? ' is-partial' : ''}`}
+      data-testid={`solver-rx-card-${alternative.tierCeiling}`}
+    >
+      <button
+        type="button"
+        className="solver-rx-card-head"
+        aria-expanded={expanded}
+        onClick={() => onToggle(index)}
+      >
+        <span className="solver-rx-card-tier">
+          Tier ≤ {alternative.tierCeiling}
+        </span>
+        <span className="solver-rx-card-label">{headLabel}</span>
+        {alternative.partial && (
+          <span className="solver-rx-card-partial-badge">partial coverage</span>
+        )}
+        {!isDead && (
+          <span className="solver-rx-card-stats muted">
+            {ingCount} chem{ingCount === 1 ? '' : 's'} · {totalUnits}u total
+          </span>
+        )}
+        <span className="solver-rx-card-toggle" aria-hidden="true">
+          {expanded ? '▾' : '▸'}
+        </span>
+      </button>
+      <div className="solver-rx-card-summary">{alternative.summary}</div>
+      {expanded && (
+        <div className="solver-rx-card-body">
+          {isDead ? (
+            <DeadModeBody
+              alternative={alternative}
+              data={data}
+              operator={operator}
+            />
+          ) : (
+            <StandardRxBody
+              alternative={alternative}
+              data={data}
+              operator={operator}
+            />
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function SolverPage() {
   const data = useData();
   const [damage, setDamage] = useState<DamageProfile>({});
@@ -127,7 +496,27 @@ export function SolverPage() {
   });
   const [operator, setOperator] = useState<string>('');
   const [patientState, setPatientState] = useState<PatientState>('alive');
-  const [output, setOutput] = useState<SolverOutput | null>(null);
+  const [alternatives, setAlternatives] = useState<SolverAlternatives | null>(
+    null,
+  );
+  const [expandedIndex, setExpandedIndex] = useState<number>(0);
+
+  // Restore preferred tier from localStorage on mount. The actual index is
+  // resolved against the current alternatives list when one exists.
+  const initialPreferredTier = useMemo(() => loadPreferredTier(), []);
+
+  // When alternatives update, default-expand the medic's preferred tier
+  // (if represented) or the solver-computed default index.
+  useEffect(() => {
+    if (alternatives === null) return;
+    setExpandedIndex(
+      indexForPreferredTier(
+        alternatives.alternatives,
+        initialPreferredTier,
+        alternatives.defaultIndex,
+      ),
+    );
+  }, [alternatives, initialPreferredTier]);
 
   const handleDamageChange = (id: DamageTypeId, value: number) => {
     setDamage((prev) => ({ ...prev, [id]: value }));
@@ -142,26 +531,39 @@ export function SolverPage() {
       operatorName: operator || undefined,
       patientState,
     };
-    setOutput(computeMix(input, data));
+    setAlternatives(computeAlternatives(input, data));
   };
 
   const handleReset = () => {
     setDamage({});
-    setOutput(null);
+    setAlternatives(null);
+  };
+
+  const handleCardToggle = (idx: number) => {
+    setExpandedIndex((prev) => (prev === idx ? -1 : idx));
+    const picked = alternatives?.alternatives[idx];
+    if (picked) {
+      savePreferredTier(picked.tierCeiling);
+    }
   };
 
   const anyDamage = Object.values(damage).some((v) => (v ?? 0) > 0);
-  const isDeadMode = patientState === 'dead' && output?.solved === true;
-  const canRevive = isDeadMode && output?.revivalStep !== undefined;
+  const isDeadMode = patientState === 'dead';
+
+  // The "no damage" / unsolved sentinel: when the first alternative's
+  // output reports `solved: false`, we show the same warnings block as
+  // before instead of the card list.
+  const firstAlt = alternatives?.alternatives[0];
+  const isUnsolved = firstAlt?.output.solved === false;
 
   return (
     <div className="solver-page">
       <header className="page-head">
         <h1>Rx Solver</h1>
         <p className="tagline">
-          Enter what the health scanner shows. Pick species. Get a full-heal
-          recipe — chem mix, physical items, and cryo flow, tuned to the
-          patient's damage profile.
+          Enter what the health scanner shows. Pick species. The solver returns
+          ranked Rx alternatives — fridge stock, standard medical chems, or
+          exotic-allowed — so you can pick the one that matches your inventory.
         </p>
       </header>
 
@@ -278,225 +680,42 @@ export function SolverPage() {
 
       <section className="solver-result" aria-live="polite">
         <h2>Result</h2>
-        {output === null && (
+        {alternatives === null && (
           <p className="muted">
             Fill in damage values above (at least one) and click "Compute mix".
           </p>
         )}
-        {output !== null && !output.solved && (
+        {alternatives !== null && isUnsolved && firstAlt && (
           <div className="notice notice-pending">
             <ul>
-              {output.warnings.map((w) => (
+              {firstAlt.output.warnings.map((w) => (
                 <li key={w}>{w}</li>
               ))}
             </ul>
           </div>
         )}
-        {output?.solved && !isDeadMode && (
-          <div className="solver-plan">
-            {output.ingredients.length > 0 && (
-              <>
-                <h3>Chem mix</h3>
-                <IngredientList ingredients={output.ingredients} data={data} />
-              </>
-            )}
-
-            {output.physical.length > 0 && (
-              <>
-                <h3>Physical items</h3>
-                <ul className="solver-physical">
-                  {output.physical.map((p) => {
-                    const it = data.physicalItemsById.get(p.itemId);
-                    return (
-                      <li key={p.itemId}>
-                        <strong>
-                          {p.count}× {it?.name ?? p.itemId}
-                        </strong>
-                        <div className="solver-ingredient-reason">
-                          {p.reason}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </>
-            )}
-
-            {output.cryo && (
-              <>
-                <h3>Cryo flow</h3>
-                <div className="solver-cryo">
-                  <strong>
-                    {output.cryo.units}u {output.cryo.reagentId} @{' '}
-                    {output.cryo.targetTemp}K
-                  </strong>
-                  <div className="solver-ingredient-reason">
-                    {output.cryo.reason}
-                  </div>
-                </div>
-              </>
-            )}
-
-            {output.estimatedTimeSec !== null && (
-              <p className="solver-time muted">
-                Estimated time to full heal: ~{output.estimatedTimeSec}s
+        {alternatives !== null && !isUnsolved && (
+          <div
+            className={`solver-rx-cards${isDeadMode ? ' solver-rx-cards-dead' : ''}`}
+          >
+            {alternatives.alternatives.length > 1 && (
+              <p className="solver-rx-cards-tagline muted">
+                {alternatives.alternatives.length} ranked alternatives — pick
+                the card matching your inventory. Click any header to expand.
               </p>
             )}
-
-            {output.warnings.length > 0 && (
-              <div className="solver-warnings">
-                <h3>Warnings</h3>
-                <ul>
-                  {output.warnings.map((w) => (
-                    <li key={w}>{w}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {output.label && (
-              <div className="solver-label-row">
-                <div className="solver-label-preview">
-                  <code>{output.label}</code>
-                </div>
-                {output.ingredients[0] && (
-                  <CopyLabelButton
-                    reagentId={output.ingredients[0].reagentId}
-                    units={output.ingredients[0].units}
-                    operatorName={operator || undefined}
-                    registerGlobalCopy
-                  />
-                )}
-              </div>
-            )}
-
-            {output.ingredients.length > 0 && (
-              <RecipePanels ingredients={output.ingredients} />
-            )}
-          </div>
-        )}
-
-        {isDeadMode && output && (
-          <div className="solver-plan solver-plan-revival">
-            {output.patientStateWarnings &&
-              output.patientStateWarnings.length > 0 && (
-                <div className="solver-revival-advisories">
-                  <ul>
-                    {output.patientStateWarnings.map((w) => (
-                      <li key={w}>{w}</li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-            {/* Panel 1: Topicals. */}
-            <section className="solver-revival-panel solver-revival-topicals">
-              <h3>1. Topicals — reduce damage below 200</h3>
-              {output.physical.length > 0 ? (
-                <ul className="solver-physical">
-                  {output.physical.map((p) => {
-                    const it = data.physicalItemsById.get(p.itemId);
-                    return (
-                      <li key={p.itemId}>
-                        <strong>
-                          {p.count}× {it?.name ?? p.itemId}
-                        </strong>
-                        <div className="solver-ingredient-reason">
-                          {p.reason}
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              ) : (
-                <p className="muted">
-                  Patient already below 200 total damage — no topicals required
-                  before defibrillation.
-                </p>
-              )}
-            </section>
-
-            {/* Panel 2: Defibrillator. Emitted only when revival is possible. */}
-            {canRevive && output.revivalStep && (
-              <section className="solver-revival-panel solver-revival-defib">
-                <h3>2. Defibrillate</h3>
-                <div className="solver-revival-step">
-                  <strong>{output.revivalStep.tool}</strong>
-                  <div className="solver-ingredient-reason">
-                    Heals{' '}
-                    {Object.entries(output.revivalStep.heals)
-                      .map(([k, v]) => `${v} ${k}`)
-                      .join(', ')}
-                    ; inflicts{' '}
-                    {Object.entries(output.revivalStep.inflicts)
-                      .map(([k, v]) => `${v} ${k}`)
-                      .join(', ')}
-                    .
-                  </div>
-                  <div className="solver-ingredient-reason">
-                    {output.revivalStep.note}
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {/* Panel 3: Post-revival chems. Emitted only when revival succeeded. */}
-            {canRevive &&
-              output.postRevivalIngredients &&
-              output.postRevivalIngredients.length > 0 && (
-                <section className="solver-revival-panel solver-revival-postchems">
-                  <h3>3. Post-revival chems</h3>
-                  <IngredientList
-                    ingredients={output.postRevivalIngredients}
-                    data={data}
-                  />
-                  <RecipePanels ingredients={output.postRevivalIngredients} />
-                </section>
-              )}
-
-            {!canRevive && (
-              <section className="solver-revival-panel solver-revival-blocked">
-                <h3>Revival blocked</h3>
-                <p>
-                  Topicals alone cannot reduce total damage below the 200
-                  threshold. Consult CMO for advanced options (cryo, surgery,
-                  genetic restoration).
-                </p>
-              </section>
-            )}
-
-            {output.estimatedTimeSec !== null && (
-              <p className="solver-time muted">
-                Estimated post-revival heal time: ~{output.estimatedTimeSec}s
-              </p>
-            )}
-
-            {output.warnings.length > 0 && (
-              <div className="solver-warnings">
-                <h3>Post-revival warnings</h3>
-                <ul>
-                  {output.warnings.map((w) => (
-                    <li key={w}>{w}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {output.label && canRevive && (
-              <div className="solver-label-row">
-                <div className="solver-label-preview">
-                  <code>{output.label}</code>
-                </div>
-                {output.postRevivalIngredients?.[0] && (
-                  <CopyLabelButton
-                    reagentId={output.postRevivalIngredients[0].reagentId}
-                    units={output.postRevivalIngredients[0].units}
-                    operatorName={operator || undefined}
-                    registerGlobalCopy
-                  />
-                )}
-              </div>
-            )}
+            {alternatives.alternatives.map((alt, idx) => (
+              <RxCard
+                key={alt.tierCeiling}
+                alternative={alt}
+                data={data}
+                operator={operator}
+                index={idx}
+                expanded={expandedIndex === idx}
+                onToggle={handleCardToggle}
+                isDead={isDeadMode}
+              />
+            ))}
           </div>
         )}
       </section>

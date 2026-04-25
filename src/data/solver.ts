@@ -45,6 +45,9 @@ import type {
   DamageTypeId,
   PhysicalItem,
   Reagent,
+  SolverAlternative,
+  SolverAlternativeKind,
+  SolverAlternatives,
   SolverCryoEntry,
   SolverIngredient,
   SolverInput,
@@ -432,6 +435,7 @@ function candidatesFor(
   data: DataBundle,
   includeRestricted: boolean,
   cryoOn: boolean,
+  tierCeiling: ReagentTier = 3,
 ): Candidate[] {
   const nonZeroInput = new Set<DamageTypeId>(
     (Object.keys(damage) as DamageTypeId[]).filter((k) => (damage[k] ?? 0) > 0),
@@ -454,6 +458,12 @@ function candidatesFor(
     // group-heal entries, which would have the solver silently route the
     // medic toward cryo even when they explicitly said no.
     if (!cryoOn && CRYO_REAGENTS.has(r.id)) continue;
+    // Tier ceiling (vs-xvp.5): when the medic is exploring "what would I
+    // prescribe if I only had fridge-stock?" or "what's my standard
+    // medical chems plan?" the solver caps the candidate pool at the
+    // requested ceiling. Reagents above the ceiling are excluded outright,
+    // not deboosted.
+    if (tierFor(r.id) > tierCeiling) continue;
     const covers = reagentCoversTypes(r, data);
     // How much of the INPUT profile does this reagent cover?
     let profileCoverage = 0;
@@ -1374,12 +1384,14 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
       }
 
       const includeRestricted = input.includeRestricted === true;
+      const tierCeiling = (input.tierCeiling ?? 3) as ReagentTier;
       const cands = candidatesFor(
         type,
         damage as DamageProfile,
         data,
         includeRestricted,
         cryoOn,
+        tierCeiling,
       );
       if (cands.length === 0) {
         // No reagent treats this type.
@@ -1402,6 +1414,7 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
           data,
           true,
           cryoOn,
+          tierCeiling,
         );
         const topUnfiltered = unfiltered[0];
         if (topUnfiltered && isBlacklisted(topUnfiltered.reagent.id)) {
@@ -1549,10 +1562,26 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
   }
 
   // ---- Cryo fallback.
+  // vs-xvp.5: respect the tier ceiling on the cryo lane too. All cryo
+  // reagents are tier 2 (Cryoxadone, Doxarubixadone, Aloxadone) or
+  // tier 3 (Opporozidone), so a tier-1 ceiling means "no cryo" — we
+  // emit the partial-heal warning instead, surfacing the inadequacy
+  // honestly. (Otherwise the tier-1 alternative would silently rope in
+  // tier-2 chems via cryo, defeating the "fridge stock only" promise.)
+  const inputTierCeiling = (input.tierCeiling ?? 3) as ReagentTier;
+  const cryoEffective = cryoOn && inputTierCeiling >= 2;
   let cryo: SolverCryoEntry | null = null;
-  if (cryoOn && uncoveredForCryo.size > 0) {
+  if (cryoEffective && uncoveredForCryo.size > 0) {
     const pick = selectCryoReagent(uncoveredForCryo, data);
-    const r = data.reagentsById.get(pick.reagentId);
+    // Pin cryo pick to the tier ceiling: if the selected cryo reagent's
+    // tier exceeds the ceiling, fall back to Cryoxadone (tier 2). At
+    // ceiling 1 the lane is suppressed entirely above; at ceiling 2 we
+    // accept Cryoxadone/Doxarubixadone/Aloxadone (all tier 2); at
+    // ceiling 3 the full pick (including Opporozidone tier 3) is OK.
+    const pickTier = tierFor(pick.reagentId);
+    const finalReagent =
+      pickTier > inputTierCeiling ? 'Cryoxadone' : pick.reagentId;
+    const r = data.reagentsById.get(finalReagent);
     // Compute a reasonable cryo dose: 30u by default, capped at OD if any,
     // else scaled to total uncovered damage at a nominal rate.
     const totalUncovered = [...uncoveredForCryo.values()].reduce(
@@ -1569,16 +1598,23 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
     const types = [...uncoveredForCryo.keys()].join(' + ');
     const name = r
       ? resolveFluentKey(data.fluent, r.name) || prettifyId(r.id)
-      : pick.reagentId;
+      : finalReagent;
     cryo = {
-      reagentId: pick.reagentId,
+      reagentId: finalReagent,
       units,
       targetTemp: pick.targetTemp,
       reason: `${name} × ${units}u @ ${pick.targetTemp}K — routes remaining ${Math.round(totalUncovered)} dmg (${types}) to cryo tube.`,
     };
-  } else if (!cryoOn && partialHealTypes.size > 0) {
+  } else if (
+    (!cryoOn || !cryoEffective) &&
+    (partialHealTypes.size > 0 || uncoveredForCryo.size > 0)
+  ) {
+    const types = new Set<DamageTypeId>([
+      ...partialHealTypes,
+      ...uncoveredForCryo.keys(),
+    ]);
     warnings.push(
-      `Partial heal for ${[...partialHealTypes].join(', ')} — administer this mix and re-scan. Consider enabling cryo for full coverage.`,
+      `Partial heal for ${[...types].join(', ')} — administer this mix and re-scan. Consider enabling cryo for full coverage.`,
     );
   }
 
@@ -1652,4 +1688,177 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
     estimatedTimeSec,
     solved: true,
   };
+}
+
+// ---------- Ranked alternatives (vs-xvp.5) ----------
+//
+// `computeAlternatives` runs `computeMix` 2-3 times with progressively
+// higher tier ceilings (1, 2, 3). The medic gets a list of collapsible
+// cards on the Solver page, one per alternative, each carrying its own
+// complete Rx (ingredients, physical items, cryo). The lowest-tier
+// alternative that fully covers the damage profile is the default-
+// expanded card; alternatives below it are collapsed by default.
+//
+// Trade-off summaries are wiki-voice one-liners that describe the tier
+// scope ("Fridge stock only — partial coverage") so the medic can match
+// a card to their actual inventory without re-running the solver.
+//
+// Duplicate suppression: when two adjacent tier ceilings produce the
+// same picked-reagent set, only the lower-tier alternative is shown.
+// (No medic wants to see "Standard medical chems" and "Includes exotics"
+// rendering the same Rx twice.)
+
+/**
+ * Build the wiki-voice one-line trade-off summary for a single tier
+ * alternative. Phrasing depends on (a) the tier ceiling and (b) whether
+ * the alternative fully covers the damage profile.
+ */
+function buildAlternativeSummary(
+  kind: SolverAlternativeKind,
+  output: SolverOutput,
+  partial: boolean,
+): string {
+  const partialNote = partial
+    ? ' Partial coverage — re-scan after administering and consider escalating.'
+    : '';
+  switch (kind) {
+    case 'fridge-stock':
+      return `Fridge stock only — tier-1 chems the medic carries pre-made (Bicaridine, Dermaline, Tricord, Saline, Dylovene, etc.).${partialNote}`;
+    case 'standard':
+      return `Standard medical chems — tier-1 + chemmaster recipes (Bruizine, Pyrazine, Cryoxadone, etc.). One synth run from a clean medbay.${partialNote}`;
+    case 'exotic-allowed':
+      return `Includes exotics — tier-3 chems allowed (Ultravasculine, Aloxadone, Cognizine, etc.). Higher heal rates at the cost of botany / salvage / multi-system synth.${partialNote}`;
+    default: {
+      // Exhaustiveness check.
+      const _exhaustive: never = kind;
+      void output;
+      return `Unrecognised alternative kind: ${String(_exhaustive)}`;
+    }
+  }
+}
+
+/**
+ * Build a single alternative for the given tier ceiling. Internally calls
+ * `computeMix` with `tierCeiling` set; the rest of the input passes
+ * through unchanged.
+ */
+function buildAlternative(
+  input: SolverInput,
+  data: DataBundle,
+  tierCeiling: 1 | 2 | 3,
+  kind: SolverAlternativeKind,
+): SolverAlternative {
+  const output = computeMix(
+    {
+      ...input,
+      tierCeiling,
+    },
+    data,
+  );
+  // Detect partial coverage from warnings. The standard-flow partial
+  // signal is `Partial heal for <types> — administer this mix and re-scan`
+  // (emitted when the chem pass left damage uncovered AND the cryo lane
+  // didn't take it). The OD-meets-threshold warning ("split doses or
+  // accept partial heal") is NOT a coverage signal — the medic accepting
+  // the OD-capped dose still gets full coverage when healPerUnit × OD ≥
+  // damage, so we exclude it from the regex.
+  const partial =
+    output.warnings.some((w) => /Partial heal for|re-scan(?!.*OD)/.test(w)) ||
+    (output.solved &&
+      output.ingredients.length === 0 &&
+      output.physical.length === 0 &&
+      output.cryo === null);
+  const totalUnits = output.ingredients.reduce((s, i) => s + i.units, 0);
+  return {
+    kind,
+    tierCeiling,
+    summary: buildAlternativeSummary(kind, output, partial),
+    partial,
+    totalUnits,
+    output,
+  };
+}
+
+/**
+ * True when two alternatives have identical chem ingredient sets and
+ * cryo picks. Used to suppress duplicate cards (e.g. when tier-2 and
+ * tier-3 produce the same Rx because no tier-3 chem won the ranking).
+ */
+function alternativesAreEquivalent(
+  a: SolverAlternative,
+  b: SolverAlternative,
+): boolean {
+  if (a.output.ingredients.length !== b.output.ingredients.length) return false;
+  const aIds = new Map(
+    a.output.ingredients.map((i) => [i.reagentId, i.units] as const),
+  );
+  for (const ing of b.output.ingredients) {
+    if (aIds.get(ing.reagentId) !== ing.units) return false;
+  }
+  if ((a.output.cryo?.reagentId ?? null) !== (b.output.cryo?.reagentId ?? null))
+    return false;
+  return true;
+}
+
+/**
+ * Public entry point for vs-xvp.5: returns a ranked list of 2-4 Rx
+ * alternatives plus the index of the default-expanded card.
+ *
+ * Algorithm:
+ *   1. Run `computeMix` with tier ceilings 1, 2, 3 (skip the
+ *      `dead`-mode case — that flow has its own multi-panel layout
+ *      and isn't a fit for ranked alternatives; return a single-
+ *      alternative wrapper for backwards compatibility).
+ *   2. Build a `SolverAlternative` per ceiling, compute trade-off
+ *      summaries, mark partial-coverage entries.
+ *   3. Suppress duplicate adjacent alternatives.
+ *   4. Pick the default-expanded index: the lowest-tier non-partial
+ *      alternative (i.e. fully covers damage). If every alternative is
+ *      partial, fall back to the highest-tier (most coverage) card.
+ */
+export function computeAlternatives(
+  input: SolverInput,
+  data: DataBundle,
+): SolverAlternatives {
+  // Dead-mode is a different flow — skip the ceiling sweep and wrap the
+  // single output as a 1-card alternative list so callers can handle it
+  // uniformly.
+  if (input.patientState === 'dead') {
+    const output = computeMix(input, data);
+    return {
+      alternatives: [
+        {
+          kind: 'exotic-allowed',
+          tierCeiling: 3,
+          summary:
+            'Dead-patient revival flow — topicals → defib → post-revival chems.',
+          partial: false,
+          totalUnits: output.ingredients.reduce((s, i) => s + i.units, 0),
+          output,
+        },
+      ],
+      defaultIndex: 0,
+    };
+  }
+
+  const tier1 = buildAlternative(input, data, 1, 'fridge-stock');
+  const tier2 = buildAlternative(input, data, 2, 'standard');
+  const tier3 = buildAlternative(input, data, 3, 'exotic-allowed');
+
+  // Suppress adjacent duplicates: if tier-2 picked the same chems as
+  // tier-1 (because no tier-2 chem improved anything), drop tier-2.
+  // Same for tier-3 vs tier-2.
+  const ordered: SolverAlternative[] = [tier1];
+  if (!alternativesAreEquivalent(tier1, tier2)) ordered.push(tier2);
+  const lastInOrdered = ordered[ordered.length - 1];
+  if (!alternativesAreEquivalent(lastInOrdered, tier3)) ordered.push(tier3);
+
+  // Default-expanded: lowest-tier non-partial alternative. If every
+  // alternative is partial (rare — usually means damage type has no
+  // healer at all), fall back to the highest-tier so the medic gets the
+  // most coverage available.
+  let defaultIndex = ordered.findIndex((a) => !a.partial);
+  if (defaultIndex === -1) defaultIndex = ordered.length - 1;
+
+  return { alternatives: ordered, defaultIndex };
 }

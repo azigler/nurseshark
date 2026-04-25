@@ -693,6 +693,99 @@
   color: #ff8888;
 }
 
+/* Ranked Rx alternative cards (vs-xvp.5). Lays out 2-4 collapsible cards,
+   one per tier ceiling. The default-expanded card matches the medic's
+   preferred-tier (persisted in localStorage) or falls back to the
+   lowest-tier non-partial alternative. */
+.solver-rx-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.5rem;
+}
+.solver-rx-cards-tagline {
+  margin: 0 0 0.25rem;
+  font-size: 0.92em;
+}
+.solver-rx-card {
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--panel);
+  overflow: hidden;
+}
+.solver-rx-card.tier-1 {
+  border-left: 4px solid #4caf50;
+}
+.solver-rx-card.tier-2 {
+  border-left: 4px solid #ffa726;
+}
+.solver-rx-card.tier-3 {
+  border-left: 4px solid #ef5350;
+}
+.solver-rx-card.is-partial {
+  border-color: #d4a04a;
+}
+.solver-rx-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.85rem;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: 1em;
+  color: inherit;
+  text-align: left;
+}
+.solver-rx-card-head:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.solver-rx-card-tier {
+  font-weight: 600;
+  font-size: 0.9em;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+}
+.solver-rx-card-label {
+  font-weight: 600;
+  font-size: 1.05em;
+  color: var(--accent);
+}
+.solver-rx-card-partial-badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: 0.2rem;
+  background: #d4a04a;
+  color: #2a1d00;
+  font-size: 0.78em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.solver-rx-card-stats {
+  font-size: 0.9em;
+  margin-left: auto;
+}
+.solver-rx-card-toggle {
+  margin-left: 0.4rem;
+  color: var(--muted);
+  font-size: 1.1em;
+}
+.solver-rx-card-summary {
+  padding: 0 0.85rem 0.6rem;
+  font-size: 0.93em;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+.solver-rx-card.is-collapsed .solver-rx-card-summary {
+  border-bottom: 0;
+  padding-bottom: 0.6rem;
+}
+.solver-rx-card-body {
+  padding: 0.6rem 0.85rem 0.85rem;
+}
+
 /* Per-medicine recipe panels + Full Rx synthesis order (vs-xvp.3). Lays out
    the medic's batched-reaction sequence right next to the prescription so
    they don't have to context-switch to the wiki. Visual style mirrors the

@@ -2,6 +2,7 @@
 // We use MemoryRouter + the real data bundle via DataProvider; the test
 // setup stubs fetch to return the on-disk JSON.
 
+import { fireEvent } from '@testing-library/react';
 import { Route } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import { renderRoute } from '../../test/render-helpers';
@@ -111,5 +112,48 @@ describe('routes', () => {
     expect(container.textContent).toContain('Rx Solver');
     // The form is present.
     expect(container.querySelector('form.solver-form')).toBeTruthy();
+  });
+
+  // vs-xvp.5: SolverPage renders ranked Rx alternatives as collapsible
+  // cards after a successful compute. This test fills in a simple Brute
+  // profile, submits, and asserts at least one card appears with the
+  // expected UI shape.
+  it('/solver renders Rx alternative cards after compute (vs-xvp.5)', async () => {
+    const { container } = await renderRoute(
+      '/solver',
+      <Route path="/solver" element={<SolverPage />} />,
+    );
+    // Set a Blunt damage value via the corresponding number input.
+    const inputs = container.querySelectorAll<HTMLInputElement>(
+      '.solver-damage-field input[type="number"]',
+    );
+    expect(inputs.length).toBeGreaterThan(0);
+    // First input is Blunt per DAMAGE_FIELDS order.
+    const bluntInput = inputs[0];
+    fireEvent.change(bluntInput, { target: { value: '30' } });
+
+    // Submit the form (click the primary button rather than dispatching a
+    // raw submit event so React's synthetic form-handler fires).
+    const submitBtn = container.querySelector<HTMLButtonElement>(
+      'button.primary[type="submit"]',
+    );
+    expect(submitBtn).toBeTruthy();
+    if (submitBtn) fireEvent.click(submitBtn);
+
+    // Wait for the alternative cards to render (the result section is
+    // populated synchronously after submit, but React state updates need
+    // a microtask flush).
+    await new Promise<void>((r) => {
+      setTimeout(r, 0);
+    });
+    const cards = container.querySelectorAll('.solver-rx-card');
+    expect(cards.length).toBeGreaterThanOrEqual(1);
+    // Each card carries a tier-ceiling testid hook.
+    const tierCeilings = Array.from(cards).map((c) =>
+      c.getAttribute('data-testid'),
+    );
+    for (const tc of tierCeilings) {
+      expect(tc).toMatch(/^solver-rx-card-[123]$/);
+    }
   });
 });

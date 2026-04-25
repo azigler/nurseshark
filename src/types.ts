@@ -190,6 +190,14 @@ export interface SolverInput {
    * revival flow (vs-3il.6).
    */
   readonly patientState?: PatientState;
+  /**
+   * Cap on reagent tiers the solver may pick from (vs-xvp.5). Default 3
+   * (no cap — current behavior). Setting to 1 restricts the candidate
+   * pool to fridge-stock chems; setting to 2 allows chemmaster recipes
+   * but excludes botany / exotic chems. Used by `computeAlternatives` to
+   * generate ranked Rx options for the medic to pick from.
+   */
+  readonly tierCeiling?: 1 | 2 | 3;
 }
 
 export interface SolverIngredient {
@@ -285,4 +293,47 @@ export interface SolverOutput {
    * See vs-3il.6.
    */
   readonly patientStateWarnings?: readonly string[];
+}
+
+/**
+ * One ranked Rx alternative produced by `computeAlternatives` (vs-xvp.5).
+ *
+ * The medic gets 2-4 of these as collapsible cards on the Solver page; the
+ * lowest-tier viable alternative is expanded by default. Each alternative
+ * is a complete `SolverOutput` — picking a card means committing to that
+ * recipe + tier ceiling.
+ */
+export type SolverAlternativeKind =
+  | 'fridge-stock' // tier 1 only — minimum-effort plan, may be partial.
+  | 'standard' //     tier ≤ 2  — standard medical chems.
+  | 'exotic-allowed'; // tier ≤ 3 — full pool, escalations allowed.
+
+export interface SolverAlternative {
+  readonly kind: SolverAlternativeKind;
+  /** Tier ceiling used to generate this alternative (1 / 2 / 3). */
+  readonly tierCeiling: 1 | 2 | 3;
+  /** Wiki-voice trade-off summary, one line ("Fridge stock — partial Rad coverage"). */
+  readonly summary: string;
+  /**
+   * True when this alternative cannot fully cover the damage profile in a
+   * single OD-legal mix. The UI flags partial-coverage alternatives with a
+   * warning badge so the medic doesn't pick one assuming full heal.
+   */
+  readonly partial: boolean;
+  /** Total prescribed units across all chem ingredients (compactness metric). */
+  readonly totalUnits: number;
+  /** Full Rx for this alternative — ingredients, physical, cryo, label, etc. */
+  readonly output: SolverOutput;
+}
+
+/**
+ * Ranked Rx alternatives produced by `computeAlternatives` (vs-xvp.5).
+ * Sorted by `tierCeiling` ascending (lowest tier first). The default
+ * card to expand is `defaultIndex` — typically the lowest-tier alternative
+ * that fully covers the damage profile.
+ */
+export interface SolverAlternatives {
+  readonly alternatives: readonly SolverAlternative[];
+  /** Index in `alternatives[]` of the default-expanded card. */
+  readonly defaultIndex: number;
 }
