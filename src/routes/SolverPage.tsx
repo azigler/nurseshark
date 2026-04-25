@@ -7,6 +7,7 @@
 
 import { useState } from 'react';
 import { CopyLabelButton } from '../components/CopyLabelButton';
+import { RecipePanels } from '../components/RecipePanels';
 import { prettifyId, resolveFluentKey } from '../data/fluent';
 import { computeMix } from '../data/solver';
 import { type DataBundle, useData } from '../data/store';
@@ -368,6 +369,10 @@ export function SolverPage() {
                 )}
               </div>
             )}
+
+            {output.ingredients.length > 0 && (
+              <RecipePanels ingredients={output.ingredients} />
+            )}
           </div>
         )}
 
@@ -445,6 +450,7 @@ export function SolverPage() {
                     ingredients={output.postRevivalIngredients}
                     data={data}
                   />
+                  <RecipePanels ingredients={output.postRevivalIngredients} />
                 </section>
               )}
 
