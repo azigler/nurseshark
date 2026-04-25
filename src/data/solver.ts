@@ -146,6 +146,22 @@ const BRUTE_MEDS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Cryo-class reagents — reagents that exist primarily for the cryogenics
+ * tube flow. They have broad `heals[]` entries that would otherwise dominate
+ * the standard chem pass (Cryoxadone covers Brute/Burn/Toxin/Airloss at
+ * 2-3/tick), so when the medic unchecks the "cryo" filter we must exclude
+ * them from BOTH the chem candidate pool AND the cryo-tube emission. A
+ * cryo-off plan should be makeable without ever opening a cryo tube — the
+ * vs-xvp.1 fix.
+ */
+const CRYO_REAGENTS: ReadonlySet<string> = new Set([
+  'Cryoxadone',
+  'Doxarubixadone',
+  'Aloxadone',
+  'Opporozidone',
+]);
+
+/**
  * Seconds per tick — SS14 reagent metabolism updates once per second on
  * average. A reagent consumes `metabolismRate` units per tick, so one unit
  * of a 0.5-rate reagent lasts 2 ticks.
@@ -357,6 +373,7 @@ function candidatesFor(
   damage: DamageProfile,
   data: DataBundle,
   includeRestricted: boolean,
+  cryoOn: boolean,
 ): Candidate[] {
   const nonZeroInput = new Set<DamageTypeId>(
     (Object.keys(damage) as DamageTypeId[]).filter((k) => (damage[k] ?? 0) > 0),
@@ -372,6 +389,13 @@ function candidatesFor(
     // overlay reads the ingredient list directly and doesn't go through
     // this ranking path.
     if (!includeRestricted && isBlacklisted(r.id)) continue;
+    // Cryo filter (vs-xvp.1): when the medic unchecks "cryo" they're saying
+    // "I have no access to a cryo tube — don't recommend Cryoxadone /
+    // Doxarubixadone / Aloxadone / Opporozidone." These reagents otherwise
+    // dominate the chem ranking on broad-coverage profiles because of their
+    // group-heal entries, which would have the solver silently route the
+    // medic toward cryo even when they explicitly said no.
+    if (!cryoOn && CRYO_REAGENTS.has(r.id)) continue;
     const covers = reagentCoversTypes(r, data);
     // How much of the INPUT profile does this reagent cover?
     let profileCoverage = 0;
@@ -1197,6 +1221,7 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
         damage as DamageProfile,
         data,
         includeRestricted,
+        cryoOn,
       );
       if (cands.length === 0) {
         // No reagent treats this type.
@@ -1208,13 +1233,17 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
       // "Best match was restricted" warning: if we're NOT including
       // restricted reagents, peek at the unfiltered list and compare. If
       // the top-ranked unfiltered pick is blacklisted, let the medic know
-      // we fell back to the next-best craftable option.
+      // we fell back to the next-best craftable option. Keep the cryo gate
+      // applied here too so the comparison is apples-to-apples — the medic
+      // doesn't want to be told "we fell back from Cryoxadone" when cryo is
+      // off (Cryoxadone shouldn't be a candidate at all in that case).
       if (!includeRestricted) {
         const unfiltered = candidatesFor(
           type,
           damage as DamageProfile,
           data,
           true,
+          cryoOn,
         );
         const topUnfiltered = unfiltered[0];
         if (topUnfiltered && isBlacklisted(topUnfiltered.reagent.id)) {

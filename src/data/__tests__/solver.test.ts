@@ -357,6 +357,74 @@ describe('computeMix', () => {
     expect(out.cryo?.targetTemp).toBeGreaterThan(0);
   });
 
+  // Scenario 5c (vs-xvp.1): cryo toggle OFF must exclude cryo-class reagents
+  // from the chem pass too. The original bug: Cryoxadone covers Brute/Burn/
+  // Toxin/Airloss as a group-heal entry, so a multi-damage profile with cryo
+  // unchecked would still pick Cryoxadone (and route the medic toward a cryo
+  // tube anyway). Filter must apply consistently across all suggestion lanes.
+  it('cryo OFF excludes Cryoxadone from chem ingredients (vs-xvp.1)', () => {
+    const out = computeMix(
+      {
+        // Multi-damage profile that Cryoxadone otherwise dominates.
+        damage: { Blunt: 20, Heat: 20, Poison: 20 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(out.solved).toBe(true);
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).not.toContain('Cryoxadone');
+    expect(ids).not.toContain('Aloxadone');
+    expect(ids).not.toContain('Doxarubixadone');
+    expect(ids).not.toContain('Opporozidone');
+    // Cryo lane stays null (already covered by existing tests, re-asserted here).
+    expect(out.cryo).toBeNull();
+  });
+
+  // Scenario 5d (vs-xvp.1): cryo toggle ON allows cryo-class reagents back
+  // into the chem candidate pool — they're the natural multi-damage pick.
+  it('cryo ON keeps Cryoxadone available to the chem pass (vs-xvp.1)', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 20, Heat: 20, Poison: 20 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: true },
+      },
+      data,
+    );
+    expect(out.solved).toBe(true);
+    // Cryoxadone's group coverage makes it the dominant pick here.
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).toContain('Cryoxadone');
+  });
+
+  // Scenario 5e (vs-xvp.1): cryo OFF + Cellular damage profile must not
+  // recommend Doxarubixadone via the chem lane either. Cellular is the one
+  // damage type where Doxarubixadone is the strongest single-shot heal, so
+  // this is the canary that the filter applies to all damage types.
+  it('cryo OFF excludes Doxarubixadone from Cellular pick (vs-xvp.1)', () => {
+    const out = computeMix(
+      {
+        damage: { Cellular: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(out.solved).toBe(true);
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).not.toContain('Doxarubixadone');
+    // No cryo lane either.
+    expect(out.cryo).toBeNull();
+    // Should surface a partial-heal warning since no other reagent covers
+    // Cellular in the default (non-restricted) pool.
+    const hasPartialWarning = out.warnings.some((w) =>
+      /re-scan|partial/i.test(w),
+    );
+    expect(hasPartialWarning).toBe(true);
+  });
+
   // Scenario 6: physical toggle OFF disables physical output.
   it('physical toggle off excludes bandages/gauze/etc', () => {
     const withPhys = computeMix(
