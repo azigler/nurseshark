@@ -399,6 +399,122 @@ describe('computeMix', () => {
     expect(ids).toContain('Cryoxadone');
   });
 
+  // --- Tier ranking (vs-xvp.2). ---
+
+  // Blunt-only profile picks Bicaridine (tier 1) over Bruizine, Lacerinol,
+  // Arcryox, etc. — fridge stock first when it covers the damage.
+  it('Blunt 45 picks tier-1 Bicaridine over tier-2/3 alternatives', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 45 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    const bic = out.ingredients.find((i) => i.reagentId === 'Bicaridine');
+    expect(bic).toBeDefined();
+    expect(bic?.tier).toBe(1);
+    // Tier-1 picks should NOT carry a tier reason (no escalation).
+    expect(bic?.tierReason).toBeNull();
+    // Higher-tier brute alternatives should not appear.
+    const ids = out.ingredients.map((i) => i.reagentId);
+    expect(ids).not.toContain('Arcryox');
+    expect(ids).not.toContain('Bruizine');
+  });
+
+  // Burn profile picks Dermaline (tier 1) when cryo is off — Aloxadone is
+  // tier-2 cryo-class and gated by the cryo filter.
+  it('Heat 30 cryo OFF picks tier-1 Dermaline (vs-xvp.2)', () => {
+    const out = computeMix(
+      {
+        damage: { Heat: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    const derm = out.ingredients.find((i) => i.reagentId === 'Dermaline');
+    expect(derm).toBeDefined();
+    expect(derm?.tier).toBe(1);
+    expect(derm?.tierReason).toBeNull();
+  });
+
+  // Cellular damage has no tier-1 alternative — Doxarubixadone (tier 2,
+  // cryo-class) is the natural pick when cryo is on, and the tierReason
+  // explains the escalation in fridge-stock terms.
+  it('Cellular damage with cryo ON escalates to tier-2 Doxarubixadone with reason', () => {
+    const out = computeMix(
+      {
+        damage: { Cellular: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: true },
+      },
+      data,
+    );
+    const dox = out.ingredients.find((i) => i.reagentId === 'Doxarubixadone');
+    expect(dox).toBeDefined();
+    expect(dox?.tier).toBe(2);
+    expect(dox?.tierReason).toMatch(/no fridge-stock chem covers Cellular/i);
+  });
+
+  // Every picked ingredient has a tier (1, 2, or 3). Guards against future
+  // refactors that forget to populate the field.
+  it('every picked ingredient has a tier (vs-xvp.2)', () => {
+    const out = computeMix(
+      {
+        damage: { Blunt: 30, Heat: 20, Poison: 15 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    expect(out.ingredients.length).toBeGreaterThan(0);
+    for (const ing of out.ingredients) {
+      expect([1, 2, 3]).toContain(ing.tier);
+    }
+  });
+
+  // Saline injection from species overlay carries tier 1 (fridge stock) and
+  // no tierReason — the medic shouldn't see "exotic" badge on a basic
+  // species-restorer chem.
+  it('Moth bloodloss → Saline overlay is tier 1 (vs-xvp.2)', () => {
+    const out = computeMix(
+      {
+        damage: { Bloodloss: 30 },
+        species: 'Moth',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    const saline = out.ingredients.find((i) => i.reagentId === 'Saline');
+    expect(saline).toBeDefined();
+    expect(saline?.tier).toBe(1);
+    expect(saline?.tierReason).toBeNull();
+  });
+
+  // Tier escalation by rate: a much-higher-rate tier-2 chem overrides the
+  // lower-rate tier-1 alternative (e.g. Ultravasculine vs Arithrazine for
+  // Radiation). The tierReason should describe the rate trade explicitly.
+  it('Radiation 30 cryo OFF picks Ultravasculine (tier 2) with rate-based reason', () => {
+    const out = computeMix(
+      {
+        damage: { Radiation: 30 },
+        species: 'Human',
+        filters: { chems: true, physical: false, cryo: false },
+      },
+      data,
+    );
+    const ultra = out.ingredients.find((i) => i.reagentId === 'Ultravasculine');
+    expect(ultra).toBeDefined();
+    expect(ultra?.tier).toBe(2);
+    // Tier-1 alternative (Arithrazine) exists, so the reason should be the
+    // rate-comparison phrasing, not "no fridge-stock chem covers".
+    expect(ultra?.tierReason).toMatch(
+      /heal rate of fridge-stock|profile coverage/i,
+    );
+  });
+
   // Scenario 5e (vs-xvp.1): cryo OFF + Cellular damage profile must not
   // recommend Doxarubixadone via the chem lane either. Cellular is the one
   // damage type where Doxarubixadone is the strongest single-shot heal, so

@@ -203,6 +203,23 @@ export interface SolverIngredient {
    * appear on the reagent detail page. See vs-3il.5 + `side-effect-warnings.ts`.
    */
   readonly sideEffectWarnings: readonly string[];
+  /**
+   * Availability tier of the reagent (vs-xvp.2):
+   *   1 = fridge stock / roundstart dispenser (medic has it pre-made)
+   *   2 = chemmaster / multi-step / specialized
+   *   3 = exotic / botany / admin / very rare
+   * Surfaced in the UI as a badge so the medic sees "I already have this"
+   * vs "I need a synth run" at a glance.
+   */
+  readonly tier: 1 | 2 | 3;
+  /**
+   * Wiki-voice "why" reason rendered when `tier > 1` was necessary — i.e.
+   * the lower-tier alternatives could not cover the damage profile, so the
+   * solver had to escalate. `null` when the pick was tier 1 (no escalation
+   * needed) or when escalation was for a non-damage reason (species overlay,
+   * cryo, etc.).
+   */
+  readonly tierReason: string | null;
 }
 
 export interface SolverPhysicalEntry {

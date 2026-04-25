@@ -78,14 +78,29 @@ function IngredientList({
         const name = r
           ? resolveFluentKey(data.fluent, r.name) || prettifyId(r.id)
           : ing.reagentId;
+        const tierLabel =
+          ing.tier === 1
+            ? 'Tier 1 · fridge stock'
+            : ing.tier === 2
+              ? 'Tier 2 · synth'
+              : 'Tier 3 · exotic';
         return (
           <li key={ing.reagentId} className="solver-ingredient">
             <div className="solver-ingredient-head">
               <strong>
                 {ing.units}u {name}
               </strong>
+              <span
+                className={`solver-tier-badge tier-${ing.tier}`}
+                title={tierLabel}
+              >
+                {tierLabel}
+              </span>
             </div>
             <div className="solver-ingredient-reason">{ing.reason}</div>
+            {ing.tierReason && (
+              <div className="solver-tier-reason">{ing.tierReason}</div>
+            )}
             {ing.sideEffectWarnings.length > 0 && (
               <ul className="solver-ingredient-warnings">
                 {ing.sideEffectWarnings.map((w) => (

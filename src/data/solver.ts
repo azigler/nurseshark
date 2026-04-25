@@ -54,6 +54,7 @@ import type {
 } from '../types';
 import { prettifyId, resolveFluentKey } from './fluent';
 import { blacklistEntry, isBlacklisted } from './reagent-blacklist';
+import { type ReagentTier, tierEntry, tierFor } from './reagent-tiers';
 import {
   CONDITIONAL_HEAL_WARNINGS,
   OD_PROXIMITY_WARNINGS,
@@ -320,7 +321,22 @@ interface Candidate {
   readonly profileCoverage: number;
   /** OD threshold cap. */
   readonly odCap: number;
+  /** Availability tier (vs-xvp.2). 1 = fridge stock, 2 = specialized, 3 = exotic. */
+  readonly tier: ReagentTier;
 }
+
+/**
+ * Tier-preference weight (vs-xvp.2). Used as a sort tiebreaker after the
+ * profile-coverage and rate ranks. Tuned so a tier-1 reagent beats a tier-2
+ * with the same coverage AND a slightly higher rate (the medic prefers
+ * "what I already have" over "5% better but needs a synth run"). When
+ * coverage diverges, coverage still wins — the solver won't recommend a
+ * tier-1 chem that misses a damage type just to keep the tier low.
+ *
+ * Kept module-local for now; can be promoted to a config knob if user-test
+ * shows the medics want a different bias.
+ */
+const TIER_RATE_BIAS = 0.4;
 
 function damageTypeIsTreatable(t: string): t is DamageTypeId {
   return (TREATABLE_DAMAGE_TYPES as readonly string[]).includes(t);
@@ -404,23 +420,31 @@ function candidatesFor(
     // rate per unit per sec: amountPerTick * metabolismRate (units/tick) gives
     // damage healed per second per unit of reagent in body.
     const ratePerUnitPerSec = rateType * r.metabolismRate;
+    const tier = tierFor(r.id);
     candidates.push({
       reagent: r,
       ratePerUnitPerSec,
       covers,
       profileCoverage,
       odCap,
+      tier,
     });
   }
 
   candidates.sort((a, b) => {
-    // 1. Higher profile coverage first.
+    // 1. Higher profile coverage first. Tier never overrides coverage —
+    //    we don't pick a tier-1 chem that misses damage types the patient
+    //    is bleeding from. (vs-xvp.2)
     if (b.profileCoverage !== a.profileCoverage) {
       return b.profileCoverage - a.profileCoverage;
     }
-    // 2. Higher effective rate.
-    if (b.ratePerUnitPerSec !== a.ratePerUnitPerSec) {
-      return b.ratePerUnitPerSec - a.ratePerUnitPerSec;
+    // 2. Lower tier preferred when coverage ties (vs-xvp.2). Combined with
+    //    rate so a clearly-better higher-tier reagent can still win, but
+    //    same-rate ties go to the basic chem. Score = rate − (tier-1)*BIAS.
+    const scoreA = a.ratePerUnitPerSec - (a.tier - 1) * TIER_RATE_BIAS;
+    const scoreB = b.ratePerUnitPerSec - (b.tier - 1) * TIER_RATE_BIAS;
+    if (scoreB !== scoreA) {
+      return scoreB - scoreA;
     }
     // 3. Higher OD cap (more headroom, lower risk).
     if (b.odCap !== a.odCap) {
@@ -431,6 +455,73 @@ function candidatesFor(
   });
 
   return candidates;
+}
+
+/**
+ * Build the `tierReason` string for a picked ingredient (vs-xvp.2). When a
+ * tier-1 chem covered the picked damage types, returns null (no escalation
+ * needed; the badge is enough). When the pick is tier 2/3, explain why the
+ * tier-1 alternatives were insufficient — the medic learns when to expect a
+ * synth run vs reach for the fridge.
+ */
+function buildTierReason(
+  cand: Candidate,
+  pickedTypes: readonly DamageTypeId[],
+  damage: DamageProfile,
+  data: DataBundle,
+  cryoOn: boolean,
+): string | null {
+  if (cand.tier === 1) return null;
+  const entry = tierEntry(cand.reagent.id);
+  const baseRationale = entry?.rationale ?? '';
+
+  // Find which picked damage types had no tier-1 alternative AND track the
+  // best tier-1 rate for the ones that did. We use the rate ratio to decide
+  // between two phrasings: "no fridge-stock alternative" vs "much higher
+  // rate than the fridge-stock alternative".
+  const nonZeroInput = (Object.keys(damage) as DamageTypeId[]).filter(
+    (k) => (damage[k] ?? 0) > 0,
+  );
+  const uncoveredByTier1: DamageTypeId[] = [];
+  let bestTier1Rate = 0;
+  let candRateForPicked = 0;
+  for (const t of pickedTypes) {
+    let tier1Rate = 0;
+    for (const r of data.reagents) {
+      if (isBlacklisted(r.id)) continue;
+      if (tierFor(r.id) !== 1) continue;
+      const rt = healRateForType(r, t, data);
+      if (rt <= 0) continue;
+      const score = rt * r.metabolismRate;
+      if (score > tier1Rate) tier1Rate = score;
+    }
+    if (tier1Rate <= 0) {
+      uncoveredByTier1.push(t);
+    } else if (tier1Rate > bestTier1Rate) {
+      bestTier1Rate = tier1Rate;
+    }
+    const candR = healRateForType(cand.reagent, t, data);
+    const candScore = candR * cand.reagent.metabolismRate;
+    if (candScore > candRateForPicked) candRateForPicked = candScore;
+  }
+
+  if (uncoveredByTier1.length > 0) {
+    return `Tier ${cand.tier}: no fridge-stock chem covers ${uncoveredByTier1.join(', ')}. ${baseRationale}`.trim();
+  }
+  const profileTypes = nonZeroInput.join(', ');
+  // Cryo-on edge case: when cryo is enabled, Cryoxadone's group coverage
+  // routinely beats single-type tier-1 picks for multi-damage profiles.
+  // Phrase the rationale accordingly.
+  if (cryoOn && cand.reagent.id === 'Cryoxadone') {
+    return `Tier 2 (cryo on): Cryoxadone covers the full profile (${profileTypes}) in one chem. ${baseRationale}`.trim();
+  }
+  // Pure-rate escalation: the tier-1 alternative existed but this pick is
+  // dramatically faster (≥1.5×). Tell the medic they have a fridge-stock
+  // option if they don't want to synth.
+  if (bestTier1Rate > 0 && candRateForPicked >= bestTier1Rate * 1.5) {
+    return `Tier ${cand.tier}: ~${(candRateForPicked / bestTier1Rate).toFixed(1)}× the heal rate of fridge-stock alternatives for ${profileTypes}. ${baseRationale}`.trim();
+  }
+  return `Tier ${cand.tier}: better profile coverage than tier-1 alternatives for ${profileTypes}. ${baseRationale}`.trim();
 }
 
 // ---------- Dose computation ----------
@@ -577,6 +668,8 @@ function applySpeciesOverlay(
         units: needed,
         reason: `Copper × ${needed}u — covers ${bloodloss} Bloodloss for Arachnid (Iron is toxic; Copper is the species-gated blood restorer).`,
         sideEffectWarnings: [],
+        tier: tierFor(ARACHNID_BLOOD_RESTORER),
+        tierReason: null,
       });
     } else {
       const needed = Math.max(5, Math.ceil(bloodloss / SALINE_HEAL_PER_UNIT));
@@ -585,6 +678,8 @@ function applySpeciesOverlay(
         units: needed,
         reason: `Saline × ${needed}u — covers ${bloodloss} Bloodloss for Arachnid (Copper unavailable; Iron is toxic to Arachnids).`,
         sideEffectWarnings: [],
+        tier: tierFor('Saline'),
+        tierReason: null,
       });
       warnings.push(
         'Arachnid: Copper unavailable — falling back to Saline. Iron is toxic to Arachnids; do not substitute.',
@@ -597,6 +692,8 @@ function applySpeciesOverlay(
       units: needed,
       reason: `Saline × ${needed}u — covers ${bloodloss} Bloodloss for ${input.species} (universal restorer; iron-metabolism safe).`,
       sideEffectWarnings: [],
+      tier: tierFor('Saline'),
+      tierReason: null,
     });
   }
   return { ingredients: out, warnings };
@@ -1177,6 +1274,10 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
     string,
     Array<{ type: DamageTypeId; dose: number; covered: number }>
   >();
+  // Track the winning Candidate per picked reagent so the post-loop tier-
+  // reason synthesis (vs-xvp.2) can examine its `tier` and original profile
+  // coverage without re-deriving them.
+  const candidateForReagent = new Map<string, Candidate>();
   // Over-damage flags: track types that can't be covered in a single OD-legal dose.
   const partialHealTypes = new Set<DamageTypeId>();
   const uncoveredForCryo = new Map<DamageTypeId, number>();
@@ -1273,6 +1374,8 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
           units: newUnits,
           reason: existing.reason, // will rebuild below
           sideEffectWarnings: [], // rebuilt below
+          tier: best.tier,
+          tierReason: null, // rebuilt below
         });
       } else {
         ingredientsMap.set(best.reagent.id, {
@@ -1280,8 +1383,14 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
           units: dose,
           reason: '', // rebuilt below
           sideEffectWarnings: [], // rebuilt below
+          tier: best.tier,
+          tierReason: null, // rebuilt below
         });
       }
+      // Track the candidate metadata for tier-reason synthesis after the
+      // chem-pick loop completes (vs-xvp.2). Last-write-wins is fine — same
+      // reagent picked for additional types just appends to `contribs`.
+      candidateForReagent.set(best.reagent.id, best);
       const contribs = reasonContrib.get(best.reagent.id) ?? [];
       contribs.push({ type, dose, covered: Math.min(healed, leftover) });
       reasonContrib.set(best.reagent.id, contribs);
@@ -1331,6 +1440,19 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
       // Per-ingredient side-effect advisories (vs-3il.5) — static map +
       // context-derived (Tricord high-damage, Epi non-crit, Dermaline OD).
       const sideEffectWarnings = buildSideEffectWarnings(r, ing.units, input);
+      // Tier reason (vs-xvp.2): only populated when tier > 1, explaining
+      // why the solver had to escalate above fridge-stock chems.
+      const cand = candidateForReagent.get(ing.reagentId);
+      const pickedTypes = contribs.map((c) => c.type);
+      const tierReason = cand
+        ? buildTierReason(
+            cand,
+            pickedTypes,
+            damage as DamageProfile,
+            data,
+            cryoOn,
+          )
+        : null;
       // Replace with rebuilt reason (Map entries are references, but we
       // re-set to be safe).
       ingredientsMap.set(ing.reagentId, {
@@ -1338,6 +1460,8 @@ export function computeMix(input: SolverInput, data: DataBundle): SolverOutput {
         units: ing.units,
         reason: reasonText,
         sideEffectWarnings,
+        tier: ing.tier,
+        tierReason,
       });
     }
   } else {

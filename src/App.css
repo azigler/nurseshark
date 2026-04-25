@@ -571,6 +571,12 @@
   border: 1px solid var(--border);
   border-radius: 0.375rem;
 }
+.solver-ingredient-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
 .solver-ingredient-head strong {
   color: var(--accent);
 }
@@ -578,6 +584,44 @@
   font-size: 0.85em;
   color: var(--text-dim);
   margin-top: 0.25em;
+}
+
+/* Tier badge (vs-xvp.2). Surfaces the medic-availability grouping right next
+   to the picked reagent so "fridge stock" vs "needs a synth run" is visible
+   at a glance. Color cues match the hoshizora-sayo guide's section banding. */
+.solver-tier-badge {
+  display: inline-block;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7em;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  border: 1px solid transparent;
+}
+.solver-tier-badge.tier-1 {
+  background: #1f4d2e;
+  color: #b6f5b6;
+  border-color: #2e6b3f;
+}
+.solver-tier-badge.tier-2 {
+  background: #4d3e1f;
+  color: #f5d692;
+  border-color: #6b5a2e;
+}
+.solver-tier-badge.tier-3 {
+  background: #4d1f3e;
+  color: #f5b6d6;
+  border-color: #6b2e5a;
+}
+/* Tier-rationale line: when tier > 1 the solver explains why escalation was
+   necessary. Slightly subdued; a peer of the reason line. */
+.solver-tier-reason {
+  font-size: 0.8em;
+  color: var(--text-dim);
+  margin-top: 0.2em;
+  font-style: italic;
 }
 .solver-time {
   margin-top: 0.75rem;

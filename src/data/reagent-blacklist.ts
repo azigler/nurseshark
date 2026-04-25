@@ -87,6 +87,18 @@ export const REAGENT_BLACKLIST: readonly BlacklistEntry[] = [
     notes:
       'Artifact-interaction reagent (Science/xenoarch). Not produced by chemistry.',
   },
+  {
+    id: 'RobustHarvest',
+    reason: 'botany-only',
+    notes:
+      'Botanical reagent. Heals Brute 3/tick + Poison 2/tick BUT all heal effects are gated on MetabolizerTypeCondition: [Plant]; humans never see the heal. Solver was picking it for Blunt profiles before the gate was modeled (vs-xvp.2 fallout).',
+  },
+  {
+    id: 'PlantBGone',
+    reason: 'botany-only',
+    notes:
+      'Botanical herbicide. Heal effect (-4 Poison) is gated on MetabolizerTypeCondition: [Plant] and inflicts Brute on humans — never the right pick for a person.',
+  },
 ];
 
 /** Efficient membership check. */
